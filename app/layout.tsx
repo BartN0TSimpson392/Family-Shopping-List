@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FSL – Family Shopping List",
-  description: "Build and share grocery shopping lists with your family",
+  title: "Inner Circle – Private Dispatch",
+  description: "Your private family shopping dispatch service",
 };
 
 export default function RootLayout({
