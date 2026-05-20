@@ -322,7 +322,7 @@ function ReplacementPanel({
                 type="search"
                 placeholder="Search for a substitute..."
                 onBlur={search}
-                className="flex-1 border border-gray-300 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="flex-1 border border-gray-300 rounded-xl px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <button
                 type="button"
@@ -470,7 +470,7 @@ function CartPanel({
                     value={item.note}
                     onChange={(e) => onUpdateNote(item.product.productId, e.target.value)}
                     placeholder="Add a note..."
-                    className="mt-2 w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+                    className="mt-2 w-full text-[16px] border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white"
                   />
                   {/* replacement */}
                   {item.replacement ? (
@@ -879,7 +879,7 @@ export default function ShoppingApp() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search products (e.g. milk, bread, chicken)..."
-            className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
           <button
             type="submit"
