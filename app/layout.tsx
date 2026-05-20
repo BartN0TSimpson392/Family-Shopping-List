@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Kroger Shopping List",
-  description: "Build and share Kroger grocery shopping lists",
+  title: "FSL – Family Shopping List",
+  description: "Build and share grocery shopping lists with your family",
 };
 
 export default function RootLayout({

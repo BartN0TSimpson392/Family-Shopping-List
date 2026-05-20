@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedList, SharedItem } from '@/lib/types'
 
-const HISTORY_KEY = 'kroger-purchase-history'
+const HISTORY_KEY = 'fsl-purchase-history'
 
 function loadHistory(): HistoryItem[] {
   try {
@@ -28,18 +28,14 @@ function addToHistory(product: KrogerProduct, current: HistoryItem[]): HistoryIt
   return [entry, ...filtered].slice(0, 30)
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 function getProductImage(product: KrogerProduct, size: string): string {
   for (const img of product.images ?? []) {
     if (img.perspective === 'front') {
       const found = img.sizes?.find((s) => s.id === size)
       if (found) return found.url
-      // fall back to any size
       if (img.sizes?.length) return img.sizes[0].url
     }
   }
-  // try any perspective
   for (const img of product.images ?? []) {
     const found = img.sizes?.find((s) => s.id === size)
     if (found) return found.url
@@ -60,7 +56,21 @@ function getSize(product: KrogerProduct): string {
   return product.items?.[0]?.size ?? ''
 }
 
-// ── sub-components ───────────────────────────────────────────────────────────
+// ── FSL logo mark ────────────────────────────────────────────────────────────
+
+function FslLogo({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
+  const dims = size === 'lg' ? 'w-24 h-24' : size === 'sm' ? 'w-8 h-8' : 'w-10 h-10'
+  const icon = size === 'lg' ? 'w-12 h-12' : size === 'sm' ? 'w-4 h-4' : 'w-5 h-5'
+  return (
+    <div className={`${dims} bg-white/20 backdrop-blur-sm rounded-2xl flex items-center justify-center shadow-lg`}>
+      <svg className={`${icon} text-white`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
+      </svg>
+    </div>
+  )
+}
+
+// ── StorePicker ───────────────────────────────────────────────────────────────
 
 function StorePicker({
   locationResults,
@@ -83,55 +93,56 @@ function StorePicker({
   }
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center px-4 py-16 bg-gray-50 min-h-screen">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-full mb-4">
-            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-          </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Kroger Shopping List</h1>
-          <p className="text-gray-500">Enter your zip code to find a nearby Kroger store</p>
+    <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-indigo-700 to-violet-700 flex flex-col">
+      <div className="flex-1 flex flex-col items-center justify-center px-6 pt-16 pb-10">
+        {/* Brand */}
+        <div className="mb-10 text-center">
+          <FslLogo size="lg" />
+          <h1 className="text-5xl font-black text-white tracking-tight mt-5">FSL</h1>
+          <p className="text-indigo-200 text-lg font-semibold mt-1">Family Shopping List</p>
+          <p className="text-indigo-300 text-sm mt-2">Your family, always stocked.</p>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Zip Code</label>
+        {/* Card */}
+        <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl p-7">
+          <h2 className="text-xl font-black text-slate-900 mb-1">Find your store</h2>
+          <p className="text-sm text-slate-400 mb-5">Enter your zip code to get started</p>
+
           <input
             ref={inputRef}
             type="tel"
             inputMode="numeric"
             maxLength={5}
             onBlur={trySearch}
-            placeholder="e.g. 45202"
-            className="w-full border border-gray-300 rounded-xl px-4 py-4 text-xl tracking-widest text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            placeholder="45202"
+            className="w-full border-2 border-slate-200 focus:border-indigo-500 rounded-2xl px-4 py-4 text-3xl tracking-[0.4em] text-center focus:outline-none transition-colors duration-150 font-black text-slate-900 placeholder:text-slate-200 placeholder:tracking-widest placeholder:font-light"
           />
           <button
             type="button"
             onClick={trySearch}
-            className="mt-3 w-full bg-blue-600 text-white font-semibold py-4 rounded-xl text-lg active:bg-blue-800"
+            className="mt-4 w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 active:scale-[0.97] text-white font-bold py-4 rounded-2xl text-lg transition-all duration-150 shadow-lg shadow-indigo-300"
           >
-            {isLoading ? (
-              <span className="inline-block w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : 'Find My Kroger'}
+            {isLoading
+              ? <span className="inline-block w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              : 'Find My Store →'}
           </button>
-          {error && <p className="mt-3 text-sm text-red-600 text-center">{error}</p>}
+          {error && <p className="mt-3 text-sm text-red-500 text-center font-medium">{error}</p>}
         </div>
 
         {locationResults.length > 0 && (
-          <div className="mt-4 bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-            <p className="px-4 pt-4 pb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-              {locationResults.length} store{locationResults.length !== 1 ? 's' : ''} found
+          <div className="mt-4 w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden">
+            <p className="px-5 pt-5 pb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+              {locationResults.length} store{locationResults.length !== 1 ? 's' : ''} nearby
             </p>
-            <ul>
+            <ul className="pb-2">
               {locationResults.map((loc, idx) => (
                 <li key={loc.locationId}>
                   <button
                     onClick={() => onSelect(loc)}
-                    className={`w-full text-left px-4 py-3 hover:bg-blue-50 active:bg-blue-100 transition-colors ${idx < locationResults.length - 1 ? 'border-b border-gray-100' : ''}`}
+                    className={`w-full text-left px-5 py-4 hover:bg-indigo-50 active:bg-indigo-100 active:scale-[0.99] transition-all duration-100 ${idx < locationResults.length - 1 ? 'border-b border-slate-100' : ''}`}
                   >
-                    <p className="font-semibold text-gray-900">{loc.name}</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="font-bold text-slate-900">{loc.name}</p>
+                    <p className="text-sm text-slate-400 mt-0.5">
                       {loc.address.addressLine1}, {loc.address.city}, {loc.address.state} {loc.address.zipCode}
                     </p>
                   </button>
@@ -144,6 +155,8 @@ function StorePicker({
     </div>
   )
 }
+
+// ── ProductCard ───────────────────────────────────────────────────────────────
 
 function ProductCard({
   product,
@@ -159,21 +172,34 @@ function ProductCard({
   const imgUrl = getProductImage(product, 'thumbnail') || getProductImage(product, 'small')
   const price = getPrice(product)
   const size = getSize(product)
+  const [justAdded, setJustAdded] = useState(false)
+
+  const handleAdd = () => {
+    onAdd(product)
+    setJustAdded(true)
+    setTimeout(() => setJustAdded(false), 700)
+  }
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col overflow-hidden hover:shadow-md transition-shadow">
+    <div className={`bg-white rounded-2xl flex flex-col overflow-hidden transition-all duration-200 ${
+      cartItem
+        ? 'border-2 border-indigo-300 shadow-md shadow-indigo-100'
+        : 'border border-slate-200 hover:border-indigo-200 hover:shadow-xl hover:shadow-indigo-50 hover:-translate-y-0.5'
+    }`}>
       {/* image */}
-      <div className="relative bg-gray-50 flex items-center justify-center h-36">
+      <div className="relative bg-slate-50 flex items-center justify-center h-36">
+        {cartItem && (
+          <div className="absolute top-2 right-2 w-5 h-5 bg-indigo-600 rounded-full flex items-center justify-center shadow">
+            <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+        )}
         {imgUrl ? (
-          <img
-            src={imgUrl}
-            alt={product.description}
-            loading="lazy"
-            className="h-28 w-28 object-contain mix-blend-multiply"
-          />
+          <img src={imgUrl} alt={product.description} loading="lazy" className="h-28 w-28 object-contain mix-blend-multiply" />
         ) : (
-          <div className="w-20 h-20 bg-gray-200 rounded-lg flex items-center justify-center">
-            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-20 h-20 bg-slate-200 rounded-xl flex items-center justify-center">
+            <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
           </div>
@@ -182,45 +208,48 @@ function ProductCard({
 
       {/* info */}
       <div className="flex flex-col flex-1 px-3 pt-2 pb-3 gap-1">
-        <p className="text-xs text-gray-400 font-medium uppercase tracking-wide truncate">{product.brand || ''}</p>
-        <p className="text-sm font-semibold text-gray-900 leading-tight line-clamp-2 flex-1">{product.description}</p>
+        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest truncate">{product.brand || ''}</p>
+        <p className="text-sm font-semibold text-slate-900 leading-tight line-clamp-2 flex-1">{product.description}</p>
         <div className="flex items-end justify-between mt-1">
           <div>
-            {size && <p className="text-xs text-gray-500">{size}</p>}
-            {price > 0 && (
-              <p className="text-sm font-bold text-green-700">${price.toFixed(2)}</p>
-            )}
+            {size && <p className="text-xs text-slate-400">{size}</p>}
+            {price > 0 && <p className="text-sm font-black text-emerald-600">${price.toFixed(2)}</p>}
           </div>
 
-          {/* add / qty stepper */}
           {cartItem ? (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={() => onUpdateQty(product.productId, cartItem.quantity - 1)}
-                className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 font-bold flex items-center justify-center hover:bg-blue-200 transition-colors text-lg leading-none"
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-700 font-bold flex items-center justify-center hover:bg-slate-200 active:scale-[0.85] transition-all duration-100 text-lg leading-none"
                 aria-label="Decrease quantity"
-              >
-                −
-              </button>
-              <span className="w-6 text-center text-sm font-semibold text-gray-900">{cartItem.quantity}</span>
+              >−</button>
+              <span className="w-6 text-center text-sm font-black text-slate-900">{cartItem.quantity}</span>
               <button
                 onClick={() => onUpdateQty(product.productId, cartItem.quantity + 1)}
                 disabled={cartItem.quantity >= 20}
-                className="w-8 h-8 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center hover:bg-blue-700 disabled:bg-blue-300 transition-colors text-lg leading-none"
+                className="w-8 h-8 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center hover:bg-indigo-700 disabled:bg-indigo-300 active:scale-[0.85] transition-all duration-100 text-lg leading-none"
                 aria-label="Increase quantity"
-              >
-                +
-              </button>
+              >+</button>
             </div>
           ) : (
             <button
-              onClick={() => onAdd(product)}
-              className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 active:scale-95 transition-all shadow-sm"
-              aria-label="Add to cart"
+              onClick={handleAdd}
+              className={`w-9 h-9 rounded-full text-white flex items-center justify-center transition-all duration-150 shadow-md active:scale-[0.82] ${
+                justAdded
+                  ? 'bg-emerald-500 scale-110 shadow-emerald-200'
+                  : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
+              }`}
+              aria-label="Add to list"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-              </svg>
+              {justAdded ? (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+                </svg>
+              )}
             </button>
           )}
         </div>
@@ -228,6 +257,8 @@ function ProductCard({
     </div>
   )
 }
+
+// ── ReplacementPanel ──────────────────────────────────────────────────────────
 
 function ReplacementPanel({
   forItem,
@@ -242,20 +273,24 @@ function ReplacementPanel({
   onSelect: (r: CartReplacement) => void
   onClose: () => void
 }) {
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [query, setQuery] = useState('')
   const [results, setResults] = useState<KrogerProduct[]>([])
   const [searching, setSearching] = useState(false)
 
-  const search = async () => {
-    const term = inputRef.current?.value?.trim()
-    if (!term) return
+  const search = useCallback(async (term: string) => {
+    if (!term.trim()) { setResults([]); return }
     setSearching(true)
     try {
       const res = await fetch(`/api/kroger/products?term=${encodeURIComponent(term)}&locationId=${store.locationId}&start=0`)
       const data = await res.json()
       setResults(data.products ?? [])
     } catch { /* ignore */ } finally { setSearching(false) }
-  }
+  }, [store.locationId])
+
+  useEffect(() => {
+    const t = setTimeout(() => search(query), 500)
+    return () => clearTimeout(t)
+  }, [query, search])
 
   const pick = (product: KrogerProduct) => {
     onSelect({
@@ -278,78 +313,75 @@ function ReplacementPanel({
 
   return (
     <div className="fixed inset-0 z-[70] flex flex-col justify-end">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white rounded-t-2xl shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-t-3xl shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 bg-slate-200 rounded-full" />
+        </div>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
           <div>
-            <h3 className="font-bold text-gray-900">Choose Substitute</h3>
-            <p className="text-xs text-gray-500 truncate max-w-[240px]">for {forItem.product.description}</p>
+            <h3 className="font-black text-slate-900">Choose Substitute</h3>
+            <p className="text-xs text-slate-400 truncate max-w-[240px]">for {forItem.product.description}</p>
           </div>
-          <button onClick={onClose} className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center">
-            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <button onClick={onClose} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all duration-100">
+            <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-5">
-          {/* Previously purchased */}
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
           {filteredHistory.length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Previously Purchased</p>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Previously Purchased</p>
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {filteredHistory.map(h => (
                   <button
                     key={h.productId}
                     onClick={() => pickFromHistory(h)}
-                    className="flex-shrink-0 w-24 bg-gray-50 border border-gray-200 rounded-xl p-2 text-left hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                    className="flex-shrink-0 w-24 bg-slate-50 border border-slate-200 rounded-2xl p-2 text-left hover:border-indigo-300 hover:bg-indigo-50 active:scale-95 transition-all duration-100"
                   >
                     {h.img && <img src={h.img} alt={h.description} className="w-12 h-12 object-contain mx-auto mb-1" />}
-                    <p className="text-xs font-medium text-gray-800 leading-tight line-clamp-2">{h.description}</p>
-                    {h.price > 0 && <p className="text-xs text-green-700 mt-0.5">${h.price.toFixed(2)}</p>}
+                    <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2">{h.description}</p>
+                    {h.price > 0 && <p className="text-xs text-emerald-600 font-bold mt-0.5">${h.price.toFixed(2)}</p>}
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Search */}
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Search Products</p>
-            <div className="flex gap-2 mb-3">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Search Products</p>
+            <div className="relative mb-4">
               <input
-                ref={inputRef}
                 type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search for a substitute..."
-                onBlur={search}
-                className="flex-1 border border-gray-300 rounded-xl px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border-2 border-slate-200 focus:border-indigo-400 rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 pr-10"
               />
-              <button
-                type="button"
-                onClick={search}
-                className="bg-blue-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold"
-              >
-                {searching ? <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : 'Go'}
-              </button>
+              {searching && (
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 inline-block w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              )}
             </div>
             <div className="grid grid-cols-2 gap-2">
               {results.map(p => (
                 <button
                   key={p.productId}
                   onClick={() => pick(p)}
-                  className="bg-gray-50 border border-gray-200 rounded-xl p-2 text-left hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                  className="bg-slate-50 border border-slate-200 rounded-2xl p-2 text-left hover:border-indigo-300 hover:bg-indigo-50 active:scale-95 transition-all duration-100"
                 >
                   {getProductImage(p, 'thumbnail') && (
                     <img src={getProductImage(p, 'thumbnail')} alt={p.description} className="w-14 h-14 object-contain mx-auto mb-1" />
                   )}
-                  <p className="text-xs font-semibold text-gray-800 leading-tight line-clamp-2">{p.description}</p>
-                  <p className="text-xs text-gray-400">{p.items?.[0]?.size}</p>
-                  {getPrice(p) > 0 && <p className="text-xs text-green-700 font-medium">${getPrice(p).toFixed(2)}</p>}
+                  <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2">{p.description}</p>
+                  <p className="text-xs text-slate-400">{p.items?.[0]?.size}</p>
+                  {getPrice(p) > 0 && <p className="text-xs text-emerald-600 font-bold">${getPrice(p).toFixed(2)}</p>}
                 </button>
               ))}
             </div>
-            {results.length === 0 && !searching && inputRef.current?.value && (
-              <p className="text-sm text-gray-400 text-center py-4">No results. Try a different search.</p>
+            {results.length === 0 && !searching && query.trim() && (
+              <p className="text-sm text-slate-400 text-center py-6 font-medium">No results. Try a different search.</p>
             )}
           </div>
         </div>
@@ -357,6 +389,8 @@ function ReplacementPanel({
     </div>
   )
 }
+
+// ── CartPanel ─────────────────────────────────────────────────────────────────
 
 function CartPanel({
   cart,
@@ -385,154 +419,148 @@ function CartPanel({
 
   return (
     <>
-      {/* backdrop */}
-      <div
-        className="fixed inset-0 bg-black/40 z-40 md:hidden"
-        onClick={onClose}
-      />
-      {/* panel */}
-      <aside className="fixed z-50 bottom-0 left-0 right-0 md:right-0 md:top-0 md:left-auto md:bottom-0 md:w-96 bg-white shadow-2xl flex flex-col rounded-t-2xl md:rounded-none max-h-[85vh] md:max-h-none">
-        {/* header */}
-        <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100">
-          <h2 className="text-lg font-bold text-gray-900">
-            Cart
+      <div className="fixed inset-0 bg-black/50 z-40 md:hidden backdrop-blur-sm" onClick={onClose} />
+      <aside className="fixed z-50 bottom-0 left-0 right-0 md:right-0 md:top-0 md:left-auto md:bottom-0 md:w-96 bg-white shadow-2xl flex flex-col rounded-t-3xl md:rounded-none max-h-[90vh] md:max-h-none">
+        <div className="md:hidden flex justify-center pt-3 pb-0">
+          <div className="w-10 h-1 bg-slate-200 rounded-full" />
+        </div>
+
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-xl font-black text-slate-900">Your List</h2>
             {cart.length > 0 && (
-              <span className="ml-2 text-sm font-normal text-gray-500">
-                ({cart.reduce((n, i) => n + i.quantity, 0)} items)
-              </span>
+              <p className="text-sm text-slate-400 font-medium">{cart.reduce((n, i) => n + i.quantity, 0)} items</p>
             )}
-          </h2>
+          </div>
           <button
             onClick={onClose}
-            className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors"
-            aria-label="Close cart"
+            className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all duration-100"
+            aria-label="Close"
           >
-            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* item list */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
           {cart.length === 0 && (
-            <p className="text-center text-gray-400 py-12">Your cart is empty</p>
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-20 h-20 bg-slate-100 rounded-3xl flex items-center justify-center mb-4">
+                <svg className="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
+                </svg>
+              </div>
+              <p className="text-slate-500 font-bold">Your list is empty</p>
+              <p className="text-slate-300 text-sm mt-1">Search and add items above</p>
+            </div>
           )}
           {cart.map((item) => {
             const imgUrl = getProductImage(item.product, 'thumbnail')
             const price = getPrice(item.product)
             return (
-              <div key={item.product.productId} className="flex gap-3 bg-gray-50 rounded-xl p-3">
-                {imgUrl && (
-                  <img
-                    src={imgUrl}
-                    alt={item.product.description}
-                    loading="lazy"
-                    className="w-14 h-14 object-contain flex-shrink-0"
-                  />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-gray-900 leading-tight truncate">{item.product.description}</p>
-                  {price > 0 && (
-                    <p className="text-xs text-green-700 font-medium mt-0.5">${(price * item.quantity).toFixed(2)}</p>
+              <div key={item.product.productId} className="bg-slate-50 rounded-2xl p-3 border border-slate-100">
+                <div className="flex gap-3">
+                  {imgUrl && (
+                    <img src={imgUrl} alt={item.product.description} loading="lazy" className="w-14 h-14 object-contain flex-shrink-0" />
                   )}
-                  {/* qty stepper */}
-                  <div className="flex items-center gap-1 mt-2">
-                    <button
-                      onClick={() => onUpdateQty(item.product.productId, item.quantity - 1)}
-                      className="w-7 h-7 rounded-full bg-white border border-gray-300 text-gray-700 font-bold flex items-center justify-center hover:bg-gray-100 transition-colors text-base leading-none"
-                      aria-label="Decrease"
-                    >
-                      −
-                    </button>
-                    <span className="w-6 text-center text-sm font-semibold">{item.quantity}</span>
-                    <button
-                      onClick={() => onUpdateQty(item.product.productId, item.quantity + 1)}
-                      disabled={item.quantity >= 20}
-                      className="w-7 h-7 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center hover:bg-blue-700 disabled:bg-blue-300 transition-colors text-base leading-none"
-                      aria-label="Increase"
-                    >
-                      +
-                    </button>
-                    <button
-                      onClick={() => onRemove(item.product.productId)}
-                      className="ml-auto w-7 h-7 rounded-full hover:bg-red-50 flex items-center justify-center transition-colors"
-                      aria-label="Remove item"
-                    >
-                      <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  </div>
-                  {/* item note */}
-                  <input
-                    type="text"
-                    value={item.note}
-                    onChange={(e) => onUpdateNote(item.product.productId, e.target.value)}
-                    placeholder="Add a note..."
-                    className="mt-2 w-full text-[16px] border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white"
-                  />
-                  {/* replacement */}
-                  {item.replacement ? (
-                    <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-2 py-2">
-                      <div className="flex items-center gap-2">
-                        {item.replacement.img && (
-                          <img src={item.replacement.img} alt={item.replacement.description} className="w-8 h-8 object-contain flex-shrink-0" />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-amber-700 font-semibold">If unavailable, substitute with:</p>
-                          <p className="text-xs text-gray-800 font-medium truncate">{item.replacement.description}</p>
-                          {item.replacement.price > 0 && <p className="text-xs text-green-700">${item.replacement.price.toFixed(2)}</p>}
-                        </div>
-                        <button
-                          onClick={() => onRemoveReplacement(item.product.productId)}
-                          className="text-xs text-red-400 hover:text-red-600 flex-shrink-0"
-                        >
-                          Remove
-                        </button>
-                      </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-slate-900 leading-tight truncate">{item.product.description}</p>
+                    {price > 0 && (
+                      <p className="text-xs text-emerald-600 font-bold mt-0.5">${(price * item.quantity).toFixed(2)}</p>
+                    )}
+                    <div className="flex items-center gap-1.5 mt-2">
+                      <button
+                        onClick={() => onUpdateQty(item.product.productId, item.quantity - 1)}
+                        className="w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-700 font-bold flex items-center justify-center hover:bg-slate-100 active:scale-[0.85] transition-all duration-100 text-base leading-none"
+                        aria-label="Decrease"
+                      >−</button>
+                      <span className="w-6 text-center text-sm font-black text-slate-900">{item.quantity}</span>
+                      <button
+                        onClick={() => onUpdateQty(item.product.productId, item.quantity + 1)}
+                        disabled={item.quantity >= 20}
+                        className="w-7 h-7 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center hover:bg-indigo-700 disabled:bg-indigo-300 active:scale-[0.85] transition-all duration-100 text-base leading-none"
+                        aria-label="Increase"
+                      >+</button>
+                      <button
+                        onClick={() => onRemove(item.product.productId)}
+                        className="ml-auto w-7 h-7 rounded-full hover:bg-red-50 active:scale-[0.85] flex items-center justify-center transition-all duration-100"
+                        aria-label="Remove"
+                      >
+                        <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => onAddReplacement(item.product.productId)}
-                      className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium"
-                    >
-                      + Add substitute
-                    </button>
-                  )}
+                  </div>
                 </div>
+                <input
+                  type="text"
+                  value={item.note}
+                  onChange={(e) => onUpdateNote(item.product.productId, e.target.value)}
+                  placeholder="Add a note..."
+                  className="mt-2 w-full text-[16px] border border-slate-200 rounded-xl px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white placeholder:text-slate-300 transition-shadow"
+                />
+                {item.replacement ? (
+                  <div className="mt-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      {item.replacement.img && (
+                        <img src={item.replacement.img} alt={item.replacement.description} className="w-8 h-8 object-contain flex-shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-amber-700 font-bold">If unavailable, use:</p>
+                        <p className="text-xs text-slate-800 font-medium truncate">{item.replacement.description}</p>
+                        {item.replacement.price > 0 && <p className="text-xs text-emerald-600 font-bold">${item.replacement.price.toFixed(2)}</p>}
+                      </div>
+                      <button
+                        onClick={() => onRemoveReplacement(item.product.productId)}
+                        className="text-xs text-red-400 hover:text-red-600 flex-shrink-0 active:scale-90 transition-all duration-100 font-medium"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => onAddReplacement(item.product.productId)}
+                    className="mt-2 text-xs text-indigo-600 hover:text-indigo-800 font-bold active:scale-95 transition-all duration-100"
+                  >
+                    + Add substitute
+                  </button>
+                )}
               </div>
             )
           })}
         </div>
 
-        {/* footer */}
-        <div className="border-t border-gray-100 px-4 py-4 space-y-3">
+        <div className="border-t border-slate-100 px-5 py-5 space-y-3 bg-white">
           {cartTotal > 0 && (
-            <div className="flex justify-between text-sm font-semibold text-gray-700">
-              <span>Estimated total</span>
-              <span className="text-green-700">${cartTotal.toFixed(2)}</span>
+            <div className="flex justify-between items-center">
+              <span className="text-sm font-semibold text-slate-500">Estimated total</span>
+              <span className="text-xl font-black text-emerald-600">${cartTotal.toFixed(2)}</span>
             </div>
           )}
           <textarea
             value={orderNote}
             onChange={(e) => setOrderNote(e.target.value)}
-            placeholder="Order note for shopper (optional)..."
+            placeholder="Leave a note for your shopper..."
             rows={2}
-            className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+            className="w-full text-[16px] border-2 border-slate-200 focus:border-indigo-400 rounded-2xl px-4 py-3 focus:outline-none transition-colors duration-150 resize-none placeholder:text-slate-300"
           />
           <button
             onClick={onGenerateLink}
             disabled={cart.length === 0}
-            className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold py-3 rounded-xl transition-colors"
+            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 disabled:from-slate-200 disabled:to-slate-200 disabled:text-slate-400 text-white font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] shadow-lg shadow-indigo-200 disabled:shadow-none text-base"
           >
-            Generate Shopper Link
+            {cart.length === 0 ? 'Add items to share' : '✨ Create Shopper Link'}
           </button>
         </div>
       </aside>
     </>
   )
 }
+
+// ── ShareModal ────────────────────────────────────────────────────────────────
 
 function ShareModal({
   url,
@@ -546,51 +574,54 @@ function ShareModal({
   onClose: () => void
 }) {
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center p-4" style={{ zIndex: 60 }}>
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-7">
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center"
+          className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-90 flex items-center justify-center transition-all duration-100"
           aria-label="Close"
         >
-          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
-        <div className="text-center mb-5">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-green-100 rounded-full mb-3">
-            <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-bold text-gray-900">Shopper Link Ready</h3>
-          <p className="text-sm text-gray-500 mt-1">Share this link with your shopper</p>
+
+        <div className="text-center mb-6">
+          <div className="text-5xl mb-4 animate-bounce">🎉</div>
+          <h3 className="text-2xl font-black text-slate-900">List is ready!</h3>
+          <p className="text-slate-400 mt-1">Share this link with your shopper</p>
         </div>
-        <div className="flex gap-2">
+
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 mb-4">
           <input
             readOnly
             value={url}
-            className="flex-1 text-xs border border-gray-300 rounded-xl px-3 py-2.5 bg-gray-50 text-gray-700 truncate focus:outline-none"
+            className="w-full text-sm bg-transparent text-slate-500 focus:outline-none truncate font-mono"
           />
-          <button
-            onClick={onCopy}
-            className={`px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors ${
-              copied
-                ? 'bg-green-600 text-white'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
-            }`}
-          >
-            {copied ? 'Copied!' : 'Copy'}
-          </button>
         </div>
+
+        <button
+          onClick={onCopy}
+          className={`w-full py-4 rounded-2xl font-black text-lg transition-all duration-200 active:scale-[0.97] shadow-lg ${
+            copied
+              ? 'bg-emerald-500 text-white shadow-emerald-200'
+              : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-indigo-200'
+          }`}
+        >
+          {copied ? '✓ Copied!' : 'Copy Link'}
+        </button>
+
         <a
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-3 block text-center text-sm text-blue-600 underline"
+          className="mt-4 flex items-center justify-center gap-1 text-sm text-indigo-600 font-semibold hover:text-indigo-800 active:scale-95 transition-all duration-100"
         >
-          Open shopper view
+          Preview shopper view
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+          </svg>
         </a>
       </div>
     </div>
@@ -636,10 +667,7 @@ export default function ShoppingApp() {
   // ── location search ────────────────────────────────────────────────────────
 
   const searchLocations = useCallback(async (zip: string) => {
-    if (zip.length < 5) {
-      setLocationError('Please enter a 5-digit zip code.')
-      return
-    }
+    if (zip.length < 5) { setLocationError('Please enter a 5-digit zip code.'); return }
     setLocationLoading(true)
     setLocationError('')
     try {
@@ -647,7 +675,7 @@ export default function ShoppingApp() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to fetch locations')
       setLocationResults(data)
-      if (data.length === 0) setLocationError('No Kroger stores found near that zip code.')
+      if (data.length === 0) setLocationError('No stores found near that zip code.')
     } catch (e: unknown) {
       setLocationError(e instanceof Error ? e.message : 'Could not load stores')
     } finally {
@@ -673,11 +701,7 @@ export default function ShoppingApp() {
     setSearchError('')
     if (start === 0) setProducts([])
     try {
-      const params = new URLSearchParams({
-        term: term.trim(),
-        locationId: store.locationId,
-        start: String(start),
-      })
+      const params = new URLSearchParams({ term: term.trim(), locationId: store.locationId, start: String(start) })
       const res = await fetch(`/api/kroger/products?${params}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Search failed')
@@ -731,9 +755,7 @@ export default function ShoppingApp() {
     } else {
       setCart((prev) =>
         prev.map((i) =>
-          i.product.productId === productId
-            ? { ...i, quantity: Math.min(qty, 20) }
-            : i
+          i.product.productId === productId ? { ...i, quantity: Math.min(qty, 20) } : i
         )
       )
     }
@@ -741,9 +763,7 @@ export default function ShoppingApp() {
 
   const updateNote = useCallback((productId: string, note: string) => {
     setCart((prev) =>
-      prev.map((i) =>
-        i.product.productId === productId ? { ...i, note } : i
-      )
+      prev.map((i) => i.product.productId === productId ? { ...i, note } : i)
     )
   }, [])
 
@@ -795,7 +815,6 @@ export default function ShoppingApp() {
     const longUrl = `${window.location.origin}/shop?list=${encoded}`
     setShareUrl(longUrl)
     setCopied(false)
-    // shorten in background, update when ready
     fetch(`/api/shorten?url=${encodeURIComponent(longUrl)}`)
       .then(r => r.json())
       .then(data => { if (data.url) setShareUrl(data.url) })
@@ -827,27 +846,29 @@ export default function ShoppingApp() {
   // ── render: main app ───────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-50">
+    <div className="flex flex-col min-h-screen bg-slate-50">
       {/* Header */}
-      <header className="bg-blue-700 text-white shadow-md sticky top-0 z-30">
+      <header className="bg-gradient-to-r from-indigo-600 to-violet-600 sticky top-0 z-30 shadow-lg shadow-indigo-900/20">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-            <span className="font-bold text-lg">Kroger Shopping List</span>
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 bg-white/20 rounded-xl flex items-center justify-center">
+              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
+              </svg>
+            </div>
+            <span className="font-black text-xl text-white tracking-tight">FSL</span>
           </div>
           <button
             onClick={() => setCartOpen(true)}
-            className="relative flex items-center gap-1.5 bg-white/20 hover:bg-white/30 rounded-full px-3 py-1.5 transition-colors"
-            aria-label="Open cart"
+            className="relative flex items-center gap-1.5 bg-white/20 hover:bg-white/30 active:scale-95 active:bg-white/40 rounded-full px-3 py-1.5 transition-all duration-100"
+            aria-label="Open list"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
             </svg>
-            <span className="text-sm font-semibold">Cart</span>
+            <span className="text-sm font-bold text-white">List</span>
             {cartCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-green-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+              <span className="absolute -top-1.5 -right-1.5 bg-emerald-400 text-white text-xs font-black rounded-full w-5 h-5 flex items-center justify-center shadow-md">
                 {cartCount > 99 ? '99+' : cartCount}
               </span>
             )}
@@ -857,72 +878,80 @@ export default function ShoppingApp() {
 
       {/* Store bar */}
       {store && (
-        <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 flex items-center justify-between">
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-blue-900 truncate">{store.name}</p>
-            <p className="text-xs text-blue-600 truncate">
-              {store.address.addressLine1}, {store.address.city}, {store.address.state}
-            </p>
+        <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div className="w-6 h-6 bg-indigo-100 rounded-lg flex-shrink-0 flex items-center justify-center">
+              <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-slate-900 truncate">{store.name}</p>
+              <p className="text-xs text-slate-400 truncate">{store.address.addressLine1}, {store.address.city}, {store.address.state}</p>
+            </div>
           </div>
           <button
-            onClick={() => {
-              setStore(null)
-              setLocationResults([])
-              setProducts([])
-            }}
-            className="ml-3 text-xs text-blue-700 underline whitespace-nowrap"
+            onClick={() => { setStore(null); setLocationResults([]); setProducts([]) }}
+            className="ml-3 text-xs text-indigo-600 font-bold hover:text-indigo-800 active:scale-95 transition-all duration-100 whitespace-nowrap"
           >
-            Change store
+            Change
           </button>
         </div>
       )}
 
       {/* Search bar */}
-      <div className="sticky top-14 z-20 bg-white border-b border-gray-200 px-4 py-3">
+      <div className="sticky top-14 z-20 bg-white border-b border-slate-200 px-4 py-3 shadow-sm">
         <form onSubmit={(e) => { e.preventDefault(); handleSearch() }} className="max-w-3xl mx-auto flex gap-2">
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search products (e.g. milk, bread, chicken)..."
-            className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          <button
-            type="submit"
-            disabled={isSearching || !searchQuery.trim()}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold px-4 py-2.5 rounded-xl transition-colors text-sm min-w-[70px]"
-          >
-            {isSearching && searchStart === 0 ? (
-              <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              'Search'
+          <div className="relative flex-1">
+            <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-slate-400 pointer-events-none w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search products..."
+              className="w-full border-2 border-slate-200 focus:border-indigo-400 rounded-2xl pl-10 pr-4 py-2.5 text-base focus:outline-none transition-colors duration-150"
+            />
+            {isSearching && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 inline-block w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
             )}
-          </button>
+          </div>
         </form>
       </div>
 
       {/* Product grid */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         {searchError && (
-          <div className="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-600 rounded-2xl px-4 py-3 text-sm font-medium">
             {searchError}
           </div>
         )}
 
         {products.length === 0 && !isSearching && (
-          <div className="flex flex-col items-center justify-center py-20 text-gray-400">
-            <svg className="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <p className="text-lg font-medium">Search for products</p>
-            <p className="text-sm mt-1">Start typing to find items at {store?.name}</p>
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <div className="w-24 h-24 bg-gradient-to-br from-indigo-100 to-violet-100 rounded-3xl flex items-center justify-center mb-5">
+              <svg className="w-12 h-12 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+            <p className="text-xl font-black text-slate-900">Find something good</p>
+            <p className="text-slate-400 text-sm mt-2">Search for products at {store?.name}</p>
+          </div>
+        )}
+
+        {isSearching && products.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24 gap-4">
+            <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-slate-400 text-sm font-medium">Searching…</p>
           </div>
         )}
 
         {products.length > 0 && (
           <>
-            <p className="text-sm text-gray-500 mb-4">
-              Showing {products.length} of {searchTotal} results
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
+              {products.length} of {searchTotal} results
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
               {products.map((product) => (
@@ -941,23 +970,16 @@ export default function ShoppingApp() {
                 <button
                   onClick={handleLoadMore}
                   disabled={isSearching}
-                  className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold px-8 py-3 rounded-xl transition-colors disabled:opacity-50"
+                  className="bg-white border-2 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 font-bold px-8 py-3 rounded-2xl transition-all duration-150 active:scale-[0.97] disabled:opacity-50"
                 >
-                  {isSearching ? 'Loading...' : `Load more (${searchTotal - products.length} remaining)`}
+                  {isSearching ? 'Loading…' : `Load more (${searchTotal - products.length} remaining)`}
                 </button>
               </div>
             )}
           </>
         )}
-
-        {isSearching && products.length === 0 && (
-          <div className="flex items-center justify-center py-20">
-            <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          </div>
-        )}
       </main>
 
-      {/* Cart panel */}
       {cartOpen && (
         <CartPanel
           cart={cart}
@@ -973,7 +995,6 @@ export default function ShoppingApp() {
         />
       )}
 
-      {/* Replacement panel */}
       {replacingForId && store && (() => {
         const forItem = cart.find(i => i.product.productId === replacingForId)
         if (!forItem) return null
@@ -988,7 +1009,6 @@ export default function ShoppingApp() {
         )
       })()}
 
-      {/* Share modal */}
       {shareUrl && (
         <ShareModal
           url={shareUrl}
