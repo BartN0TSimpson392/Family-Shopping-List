@@ -695,6 +695,12 @@ export default function ShoppingApp() {
     runSearch(searchQuery, 0)
   }, [runSearch, searchQuery])
 
+  useEffect(() => {
+    if (!searchQuery.trim()) { setProducts([]); setSearchTotal(0); return }
+    const t = setTimeout(() => runSearch(searchQuery, 0), 500)
+    return () => clearTimeout(t)
+  }, [searchQuery, runSearch])
+
   const handleLoadMore = useCallback(() => {
     runSearch(searchQuery, searchStart + 20)
   }, [runSearch, searchQuery, searchStart])
