@@ -5,11 +5,11 @@ export async function GET(req: NextRequest) {
   if (!url) return Response.json({ error: 'url required' }, { status: 400 })
   try {
     const res = await fetch(
-      `https://tinyurl.com/api-create.php?url=${encodeURIComponent(url)}`,
+      `https://is.gd/create.php?format=simple&url=${encodeURIComponent(url)}`,
       { cache: 'no-store' }
     )
     const short = await res.text()
-    if (!short.startsWith('https://')) throw new Error('Bad response')
+    if (!short.startsWith('https://is.gd/')) throw new Error('Bad response')
     return Response.json({ url: short })
   } catch {
     return Response.json({ url }, { status: 200 }) // fall back to original URL
