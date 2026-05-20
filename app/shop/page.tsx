@@ -94,7 +94,7 @@ function ShopContent() {
   const toggleItem = (id: string) => {
     setChecked((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id) else next.add(id)
+      if (next.has(id)) { next.delete(id) } else { next.add(id) }
       return next
     })
   }
