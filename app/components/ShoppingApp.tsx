@@ -786,9 +786,14 @@ export default function ShoppingApp() {
       note: orderNote,
     }
     const encoded = btoa(encodeURIComponent(JSON.stringify(list)))
-    const url = `${window.location.origin}/shop?list=${encoded}`
-    setShareUrl(url)
+    const longUrl = `${window.location.origin}/shop?list=${encoded}`
+    setShareUrl(longUrl)
     setCopied(false)
+    // shorten in background, update when ready
+    fetch(`/api/shorten?url=${encodeURIComponent(longUrl)}`)
+      .then(r => r.json())
+      .then(data => { if (data.url) setShareUrl(data.url) })
+      .catch(() => {})
   }, [store, cart, orderNote])
 
   const copyUrl = useCallback(() => {
