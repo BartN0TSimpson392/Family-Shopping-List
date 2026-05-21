@@ -905,7 +905,11 @@ export default function ShoppingApp() {
       addr: `${store.address.addressLine1}, ${store.address.city}, ${store.address.state}`,
       items, note: activeDispatch.note,
     }
-    const encoded = btoa(encodeURIComponent(JSON.stringify(list)))
+    const json = JSON.stringify(list)
+    const bytes = new TextEncoder().encode(json)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+    const encoded = btoa(binary)
     const longUrl = `${window.location.origin}/shop?list=${encoded}`
     setShareUrl(longUrl); setCopied(false)
     fetch(`/api/shorten?url=${encodeURIComponent(longUrl)}`).then(r => r.json()).then(data => { if (data.url) setShareUrl(data.url) }).catch(() => {})

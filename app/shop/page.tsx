@@ -31,7 +31,13 @@ function RadarLogoWhite({ className = '' }: { className?: string }) {
 }
 
 function decodeList(encoded: string): SharedList | null {
-  try { return JSON.parse(decodeURIComponent(atob(encoded))) as SharedList } catch { return null }
+  try {
+    const binary = atob(encoded)
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0))
+    return JSON.parse(new TextDecoder().decode(bytes)) as SharedList
+  } catch {
+    try { return JSON.parse(decodeURIComponent(atob(encoded))) as SharedList } catch { return null }
+  }
 }
 
 function groupByAisle(items: SharedItem[]): Map<string, SharedItem[]> {
