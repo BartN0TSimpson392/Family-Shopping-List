@@ -59,6 +59,9 @@ function ShopContent() {
   const searchParams = useSearchParams()
   const listParam = searchParams.get('list')
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [confirmedQtys, setConfirmedQtys] = useState<Record<string, number>>({})
+  const [qtyConfirmItem, setQtyConfirmItem] = useState<SharedItem | null>(null)
+  const [qtyConfirmValue, setQtyConfirmValue] = useState(1)
 
   if (!listParam) {
     return (
@@ -87,16 +90,29 @@ function ShopContent() {
   }
 
   const totalItems = list.items.reduce((n, i) => n + i.qty, 0)
-  const checkedCount = list.items.filter((i) => checked.has(i.id)).reduce((n, i) => n + i.qty, 0)
+  const checkedCount = list.items
+    .filter((i) => checked.has(i.id))
+    .reduce((n, i) => n + (confirmedQtys[i.id] ?? i.qty), 0)
   const progress = totalItems > 0 ? (checkedCount / totalItems) * 100 : 0
   const allDone = list.items.length > 0 && checkedCount >= totalItems
 
-  const toggleItem = (id: string) => {
-    setChecked((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) { next.delete(id) } else { next.add(id) }
-      return next
-    })
+  const handleItemPress = (item: SharedItem) => {
+    if (checked.has(item.id)) {
+      setChecked((prev) => { const next = new Set(prev); next.delete(item.id); return next })
+      setConfirmedQtys((prev) => { const { [item.id]: _, ...rest } = prev; return rest })
+    } else if (item.qty > 1) {
+      setQtyConfirmItem(item)
+      setQtyConfirmValue(item.qty)
+    } else {
+      setChecked((prev) => new Set([...prev, item.id]))
+    }
+  }
+
+  const confirmQty = () => {
+    if (!qtyConfirmItem) return
+    setChecked((prev) => new Set([...prev, qtyConfirmItem.id]))
+    setConfirmedQtys((prev) => ({ ...prev, [qtyConfirmItem.id]: qtyConfirmValue }))
+    setQtyConfirmItem(null)
   }
 
   const groups = groupByAisle(list.items)
@@ -187,7 +203,7 @@ function ShopContent() {
                   return (
                     <li key={item.id}>
                       <button
-                        onClick={() => toggleItem(item.id)}
+                        onClick={() => handleItemPress(item)}
                         className="w-full text-left rounded-2xl transition-all duration-200 active:scale-[0.98]"
                         style={{
                           backgroundColor: isDone ? '#EDE8DA' : 'white',
@@ -244,7 +260,7 @@ function ShopContent() {
                                   className="inline-flex items-center justify-center min-w-[2rem] h-7 rounded-full text-sm font-black px-2 transition-all duration-200"
                                   style={{ backgroundColor: isDone ? '#E5DDD0' : `${IC.gold}20`, color: isDone ? '#9DB8A8' : IC.gold }}
                                 >
-                                  ×{item.qty}
+                                  ×{isDone && confirmedQtys[item.id] !== undefined ? confirmedQtys[item.id] : item.qty}
                                 </span>
                                 {item.price > 0 && (
                                   <p className="text-xs mt-1 font-bold" style={{ color: isDone ? '#9DB8A8' : IC.gold }}>
@@ -298,6 +314,43 @@ function ShopContent() {
           </div>
         )}
       </main>
+
+      {/* Quantity confirmation modal */}
+      {qtyConfirmItem && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setQtyConfirmItem(null)} />
+          <div className="relative bg-white rounded-t-3xl shadow-2xl px-5 pt-4 pb-8">
+            <div className="flex justify-center mb-5">
+              <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
+            </div>
+            <h3 className="font-black uppercase tracking-wider text-sm mb-1" style={{ color: IC.green }}>Confirm Quantity</h3>
+            <p className="text-sm mb-1 truncate font-medium" style={{ color: IC.green }}>{qtyConfirmItem.name}</p>
+            <p className="text-xs mb-6" style={{ color: IC.textMuted }}>Ordered: {qtyConfirmItem.qty} — how many did you find?</p>
+
+            <div className="flex items-center justify-center gap-8 mb-6">
+              <button
+                onClick={() => setQtyConfirmValue(v => Math.max(1, v - 1))}
+                className="w-14 h-14 rounded-full flex items-center justify-center font-bold text-2xl active:scale-90 transition-all duration-100"
+                style={{ backgroundColor: '#E5DDD0', color: IC.green }}
+              >−</button>
+              <span className="text-4xl font-black w-16 text-center" style={{ color: IC.green }}>{qtyConfirmValue}</span>
+              <button
+                onClick={() => setQtyConfirmValue(v => Math.min(qtyConfirmItem.qty, v + 1))}
+                className="w-14 h-14 rounded-full text-white flex items-center justify-center font-bold text-2xl active:scale-90 transition-all duration-100"
+                style={{ backgroundColor: IC.green }}
+              >+</button>
+            </div>
+
+            <button
+              onClick={confirmQty}
+              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
+              style={{ backgroundColor: IC.green }}
+            >
+              Found {qtyConfirmValue} — Mark Done
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

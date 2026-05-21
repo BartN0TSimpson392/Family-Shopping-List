@@ -4,12 +4,31 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedList, SharedItem } from '@/lib/types'
 
 const HISTORY_KEY = 'ic-purchase-history'
+const FAVORITES_KEY = 'ic-favorites'
 
 function loadHistory(): HistoryItem[] {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
 }
 function saveHistory(items: HistoryItem[]) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(items)) } catch { /* ignore */ }
+}
+function loadFavorites(): HistoryItem[] {
+  try { return JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? '[]') } catch { return [] }
+}
+function saveFavorites(items: HistoryItem[]) {
+  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(items)) } catch { /* ignore */ }
+}
+function historyItemToProduct(h: HistoryItem): KrogerProduct {
+  return {
+    productId: h.productId,
+    description: h.description,
+    brand: h.brand,
+    categories: [],
+    images: h.img ? [{ perspective: 'front', featured: true, sizes: [{ id: 'thumbnail', url: h.img }] }] : [],
+    items: [{ itemId: h.productId, price: { regular: h.price, promo: 0 }, size: h.size, soldBy: 'Unit' }],
+    aisleLocations: [],
+    upc: '',
+  }
 }
 function addToHistory(product: KrogerProduct, current: HistoryItem[]): HistoryItem[] {
   const entry: HistoryItem = {
@@ -224,13 +243,17 @@ function StorePicker({
 function ProductCard({
   product,
   cartItem,
+  isFavorite,
   onAdd,
   onUpdateQty,
+  onToggleFavorite,
 }: {
   product: KrogerProduct
   cartItem: CartItem | undefined
+  isFavorite: boolean
   onAdd: (p: KrogerProduct) => void
   onUpdateQty: (id: string, qty: number) => void
+  onToggleFavorite: (p: KrogerProduct) => void
 }) {
   const imgUrl = getProductImage(product, 'thumbnail') || getProductImage(product, 'small')
   const price = getPrice(product)
@@ -253,6 +276,16 @@ function ProductCard({
       style={{ border: cartItem ? `2px solid ${IC.gold}` : '1px solid #E5DDD0' }}
     >
       <div className="relative flex items-center justify-center h-36" style={{ backgroundColor: IC.cream }}>
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleFavorite(product) }}
+          className="absolute top-2 left-2 w-7 h-7 rounded-full flex items-center justify-center transition-all duration-150 active:scale-90 z-10"
+          style={{ backgroundColor: isFavorite ? `${IC.gold}25` : 'rgba(255,255,255,0.85)' }}
+          aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+        >
+          <svg className="w-4 h-4" fill={isFavorite ? IC.gold : 'none'} stroke={isFavorite ? IC.gold : IC.textMuted} strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+          </svg>
+        </button>
         {cartItem && (
           <div className="absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center shadow-sm" style={{ backgroundColor: IC.gold }}>
             <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -686,8 +719,11 @@ export default function ShoppingApp() {
   const [copied, setCopied] = useState(false)
   const [replacingForId, setReplacingForId] = useState<string | null>(null)
   const [purchaseHistory, setPurchaseHistory] = useState<HistoryItem[]>([])
+  const [favorites, setFavorites] = useState<HistoryItem[]>([])
+  const [activeTab, setActiveTab] = useState<'favorites' | 'recent'>('favorites')
 
   useEffect(() => { setPurchaseHistory(loadHistory()) }, [])
+  useEffect(() => { setFavorites(loadFavorites()) }, [])
   useEffect(() => {
     if (cart.length === 0) return
     let h = loadHistory()
@@ -771,6 +807,24 @@ export default function ShoppingApp() {
 
   const removeReplacement = useCallback((productId: string) => {
     setCart(prev => prev.map(i => i.product.productId === productId ? { ...i, replacement: undefined } : i))
+  }, [])
+
+  const toggleFavorite = useCallback((product: KrogerProduct) => {
+    setFavorites(prev => {
+      const isFav = prev.some(f => f.productId === product.productId)
+      const next = isFav
+        ? prev.filter(f => f.productId !== product.productId)
+        : [...prev, {
+            productId: product.productId,
+            description: product.description,
+            brand: product.brand || '',
+            img: getProductImage(product, 'thumbnail') || getProductImage(product, 'small'),
+            size: product.items?.[0]?.size ?? '',
+            price: product.items?.[0]?.price?.regular ?? 0,
+          }]
+      saveFavorites(next)
+      return next
+    })
   }, [])
 
   const cartCount = cart.reduce((n, i) => n + i.quantity, 0)
@@ -890,11 +944,69 @@ export default function ShoppingApp() {
           <div className="mb-4 bg-red-50 border border-red-200 text-red-600 rounded-2xl px-4 py-3 text-sm font-medium">{searchError}</div>
         )}
 
-        {products.length === 0 && !isSearching && (
+        {/* Tabs shown when search is empty */}
+        {!searchQuery.trim() && !isSearching && (
+          <>
+            <div className="flex gap-2 mb-6">
+              <button
+                onClick={() => setActiveTab('favorites')}
+                className="flex-1 py-3 rounded-2xl font-bold text-sm uppercase tracking-wider transition-all duration-150"
+                style={{
+                  backgroundColor: activeTab === 'favorites' ? IC.green : 'transparent',
+                  color: activeTab === 'favorites' ? 'white' : IC.textMuted,
+                  border: activeTab === 'favorites' ? 'none' : `2px solid #E5DDD0`,
+                }}
+              >Favorites</button>
+              <button
+                onClick={() => setActiveTab('recent')}
+                className="flex-1 py-3 rounded-2xl font-bold text-sm uppercase tracking-wider transition-all duration-150"
+                style={{
+                  backgroundColor: activeTab === 'recent' ? IC.green : 'transparent',
+                  color: activeTab === 'recent' ? 'white' : IC.textMuted,
+                  border: activeTab === 'recent' ? 'none' : `2px solid #E5DDD0`,
+                }}
+              >Recent Purchases</button>
+            </div>
+
+            {activeTab === 'favorites' && (
+              favorites.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-24 text-center">
+                  <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
+                  <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No Favorites Yet</p>
+                  <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Tap ♡ on any product to save it here</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                  {favorites.map(fav => (
+                    <ProductCard
+                      key={fav.productId}
+                      product={historyItemToProduct(fav)}
+                      cartItem={cart.find(i => i.product.productId === fav.productId)}
+                      isFavorite={true}
+                      onAdd={addToCart}
+                      onUpdateQty={updateQty}
+                      onToggleFavorite={toggleFavorite}
+                    />
+                  ))}
+                </div>
+              )
+            )}
+
+            {activeTab === 'recent' && (
+              <div className="flex flex-col items-center justify-center py-24 text-center">
+                <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
+                <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>Coming Soon</p>
+                <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Your recent purchases will appear here</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* No results for a non-empty search */}
+        {searchQuery.trim() && !isSearching && products.length === 0 && !searchError && (
           <div className="flex flex-col items-center justify-center py-24 text-center">
-            <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
-            <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>Ready to Dispatch</p>
-            <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Search for items at {store?.name}</p>
+            <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No Results</p>
+            <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Try a different search term</p>
           </div>
         )}
 
@@ -916,8 +1028,10 @@ export default function ShoppingApp() {
                   key={product.productId}
                   product={product}
                   cartItem={cart.find((i) => i.product.productId === product.productId)}
+                  isFavorite={favorites.some(f => f.productId === product.productId)}
                   onAdd={addToCart}
                   onUpdateQty={updateQty}
+                  onToggleFavorite={toggleFavorite}
                 />
               ))}
             </div>
