@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedList, SharedItem } from '@/lib/types'
+import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedList, SharedItem, Dispatch } from '@/lib/types'
 
 const HISTORY_KEY = 'ic-purchase-history'
 const FAVORITES_KEY = 'ic-favorites'
@@ -482,12 +482,14 @@ function ReplacementPanel({
 // ── CartPanel ─────────────────────────────────────────────────────────────────
 
 function CartPanel({
-  cart, orderNote, setOrderNote, onClose, onUpdateQty, onUpdateNote,
-  onRemove, onGenerateLink, onAddReplacement, onRemoveReplacement,
+  dispatch, canDelete, onRename, onDeleteDispatch,
+  onClose, onUpdateQty, onUpdateNote, onRemove, onGenerateLink,
+  onAddReplacement, onRemoveReplacement, onSetNote,
 }: {
-  cart: CartItem[]
-  orderNote: string
-  setOrderNote: (v: string) => void
+  dispatch: Dispatch
+  canDelete: boolean
+  onRename: (name: string) => void
+  onDeleteDispatch: () => void
   onClose: () => void
   onUpdateQty: (id: string, qty: number) => void
   onUpdateNote: (id: string, note: string) => void
@@ -495,8 +497,9 @@ function CartPanel({
   onGenerateLink: () => void
   onAddReplacement: (productId: string) => void
   onRemoveReplacement: (productId: string) => void
+  onSetNote: (note: string) => void
 }) {
-  const cartTotal = cart.reduce((sum, item) => sum + getPrice(item.product) * item.quantity, 0)
+  const cartTotal = dispatch.cart.reduce((sum, item) => sum + getPrice(item.product) * item.quantity, 0)
 
   return (
     <>
@@ -506,32 +509,53 @@ function CartPanel({
           <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
         </div>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid #E5DDD0` }}>
-          <div>
-            <h2 className="text-xl font-black uppercase tracking-wider" style={{ color: IC.green }}>Dispatch</h2>
-            {cart.length > 0 && (
-              <p className="text-sm font-medium" style={{ color: IC.textMuted }}>{cart.reduce((n, i) => n + i.quantity, 0)} items</p>
+          <div className="flex-1 min-w-0 mr-2">
+            <input
+              value={dispatch.name}
+              onChange={(e) => onRename(e.target.value)}
+              className="text-xl font-black uppercase tracking-wider bg-transparent focus:outline-none w-full border-b-2 transition-colors duration-150"
+              style={{ color: IC.green, borderColor: 'transparent' }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+              onBlur={e => (e.currentTarget.style.borderColor = 'transparent')}
+            />
+            {dispatch.cart.length > 0 && (
+              <p className="text-sm font-medium mt-0.5" style={{ color: IC.textMuted }}>{dispatch.cart.reduce((n, i) => n + i.quantity, 0)} items</p>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
-            style={{ backgroundColor: IC.cream }}
-          >
-            <svg className="w-5 h-5" fill="none" stroke={IC.green} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {canDelete && (
+              <button
+                onClick={onDeleteDispatch}
+                className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+                style={{ backgroundColor: '#FEE2E2' }}
+                aria-label="Delete dispatch"
+              >
+                <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+              style={{ backgroundColor: IC.cream }}
+            >
+              <svg className="w-5 h-5" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-          {cart.length === 0 && (
+          {dispatch.cart.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <RadarLogo className="w-16 h-16 opacity-20 mb-4" />
               <p className="font-bold uppercase tracking-wider text-sm" style={{ color: IC.textMuted }}>Dispatch empty</p>
               <p className="text-sm mt-1" style={{ color: '#9DB8A8' }}>Search and add items above</p>
             </div>
           )}
-          {cart.map((item) => {
+          {dispatch.cart.map((item) => {
             const imgUrl = getProductImage(item.product, 'thumbnail')
             const price = getPrice(item.product)
             return (
@@ -613,8 +637,8 @@ function CartPanel({
             </div>
           )}
           <textarea
-            value={orderNote}
-            onChange={(e) => setOrderNote(e.target.value)}
+            value={dispatch.note}
+            onChange={(e) => onSetNote(e.target.value)}
             placeholder="Leave a note for your shopper..."
             rows={2}
             className="w-full text-[16px] bg-white rounded-2xl px-4 py-3 focus:outline-none transition-colors duration-150 resize-none placeholder:text-stone-300"
@@ -624,11 +648,11 @@ function CartPanel({
           />
           <button
             onClick={onGenerateLink}
-            disabled={cart.length === 0}
+            disabled={dispatch.cart.length === 0}
             className="w-full text-white font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] text-sm tracking-widest uppercase disabled:opacity-40"
             style={{ backgroundColor: IC.green }}
           >
-            {cart.length === 0 ? 'Add items to dispatch' : 'Send Dispatch →'}
+            {dispatch.cart.length === 0 ? 'Add items to dispatch' : 'Send Dispatch →'}
           </button>
         </div>
       </aside>
@@ -711,9 +735,10 @@ export default function ShoppingApp() {
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
 
-  const [cart, setCart] = useState<CartItem[]>([])
+  const [dispatches, setDispatches] = useState<Dispatch[]>([{ id: 'dispatch-1', name: 'Dispatch 1', cart: [], note: '' }])
+  const [activeDispatchId, setActiveDispatchId] = useState<string>('dispatch-1')
   const [cartOpen, setCartOpen] = useState(false)
-  const [orderNote, setOrderNote] = useState('')
+  const dispatchCounter = useRef(2)
 
   const [shareUrl, setShareUrl] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -725,12 +750,13 @@ export default function ShoppingApp() {
   useEffect(() => { setPurchaseHistory(loadHistory()) }, [])
   useEffect(() => { setFavorites(loadFavorites()) }, [])
   useEffect(() => {
-    if (cart.length === 0) return
+    const allItems = dispatches.flatMap(d => d.cart)
+    if (allItems.length === 0) return
     let h = loadHistory()
-    for (const item of cart) h = addToHistory(item.product, h)
+    for (const item of allItems) h = addToHistory(item.product, h)
     saveHistory(h)
     setPurchaseHistory(h)
-  }, [cart])
+  }, [dispatches])
 
   const searchLocations = useCallback(async (zip: string) => {
     if (zip.length < 5) { setLocationError('Please enter a 5-digit zip code.'); return }
@@ -779,35 +805,67 @@ export default function ShoppingApp() {
     runSearch(searchQuery, searchStart + 20)
   }, [runSearch, searchQuery, searchStart])
 
+  const updateActiveDispatch = useCallback((updater: (d: Dispatch) => Dispatch) => {
+    setDispatches(prev => prev.map(d => d.id === activeDispatchId ? updater(d) : d))
+  }, [activeDispatchId])
+
   const addToCart = useCallback((product: KrogerProduct) => {
-    setCart((prev) => {
-      const existing = prev.find((i) => i.product.productId === product.productId)
-      if (existing) return prev.map((i) => i.product.productId === product.productId ? { ...i, quantity: Math.min(i.quantity + 1, 20) } : i)
-      return [...prev, { product, quantity: 1, note: '' }]
+    updateActiveDispatch(d => {
+      const existing = d.cart.find(i => i.product.productId === product.productId)
+      return {
+        ...d,
+        cart: existing
+          ? d.cart.map(i => i.product.productId === product.productId ? { ...i, quantity: Math.min(i.quantity + 1, 20) } : i)
+          : [...d.cart, { product, quantity: 1, note: '' }],
+      }
     })
-  }, [])
+  }, [updateActiveDispatch])
 
   const removeFromCart = useCallback((productId: string) => {
-    setCart((prev) => prev.filter((i) => i.product.productId !== productId))
-  }, [])
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.filter(i => i.product.productId !== productId) }))
+  }, [updateActiveDispatch])
 
   const updateQty = useCallback((productId: string, qty: number) => {
     if (qty <= 0) removeFromCart(productId)
-    else setCart((prev) => prev.map((i) => i.product.productId === productId ? { ...i, quantity: Math.min(qty, 20) } : i))
-  }, [removeFromCart])
+    else updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, quantity: Math.min(qty, 20) } : i) }))
+  }, [removeFromCart, updateActiveDispatch])
 
   const updateNote = useCallback((productId: string, note: string) => {
-    setCart((prev) => prev.map((i) => i.product.productId === productId ? { ...i, note } : i))
-  }, [])
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, note } : i) }))
+  }, [updateActiveDispatch])
 
   const setReplacement = useCallback((productId: string, replacement: CartReplacement) => {
-    setCart(prev => prev.map(i => i.product.productId === productId ? { ...i, replacement } : i))
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, replacement } : i) }))
     setReplacingForId(null)
-  }, [])
+  }, [updateActiveDispatch])
 
   const removeReplacement = useCallback((productId: string) => {
-    setCart(prev => prev.map(i => i.product.productId === productId ? { ...i, replacement: undefined } : i))
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, replacement: undefined } : i) }))
+  }, [updateActiveDispatch])
+
+  const addDispatch = useCallback(() => {
+    const num = dispatchCounter.current++
+    const d: Dispatch = { id: `dispatch-${Date.now()}`, name: `Dispatch ${num}`, cart: [], note: '' }
+    setDispatches(prev => [...prev, d])
+    setActiveDispatchId(d.id)
   }, [])
+
+  const renameDispatch = useCallback((id: string, name: string) => {
+    setDispatches(prev => prev.map(d => d.id === id ? { ...d, name } : d))
+  }, [])
+
+  const deleteDispatch = useCallback((id: string) => {
+    setDispatches(prev => {
+      if (prev.length <= 1) return prev
+      const next = prev.filter(d => d.id !== id)
+      if (id === activeDispatchId) setActiveDispatchId(next[0].id)
+      return next
+    })
+  }, [activeDispatchId])
+
+  const setOrderNote = useCallback((note: string) => {
+    updateActiveDispatch(d => ({ ...d, note }))
+  }, [updateActiveDispatch])
 
   const toggleFavorite = useCallback((product: KrogerProduct) => {
     setFavorites(prev => {
@@ -827,11 +885,12 @@ export default function ShoppingApp() {
     })
   }, [])
 
-  const cartCount = cart.reduce((n, i) => n + i.quantity, 0)
+  const activeDispatch = dispatches.find(d => d.id === activeDispatchId) ?? dispatches[0]
+  const cartCount = activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)
 
   const generateLink = useCallback(() => {
-    if (!store || cart.length === 0) return
-    const items: SharedItem[] = cart.map((ci) => ({
+    if (!store || activeDispatch.cart.length === 0) return
+    const items: SharedItem[] = activeDispatch.cart.map((ci) => ({
       id: ci.product.productId, qty: ci.quantity, note: ci.note,
       name: ci.product.description, brand: ci.product.brand || '',
       img: getProductImage(ci.product, 'small') || getProductImage(ci.product, 'thumbnail'),
@@ -844,13 +903,13 @@ export default function ShoppingApp() {
     const list: SharedList = {
       store: store.name,
       addr: `${store.address.addressLine1}, ${store.address.city}, ${store.address.state}`,
-      items, note: orderNote,
+      items, note: activeDispatch.note,
     }
     const encoded = btoa(encodeURIComponent(JSON.stringify(list)))
     const longUrl = `${window.location.origin}/shop?list=${encoded}`
     setShareUrl(longUrl); setCopied(false)
     fetch(`/api/shorten?url=${encodeURIComponent(longUrl)}`).then(r => r.json()).then(data => { if (data.url) setShareUrl(data.url) }).catch(() => {})
-  }, [store, cart, orderNote])
+  }, [store, activeDispatch])
 
   const copyUrl = useCallback(() => {
     if (!shareUrl) return
@@ -882,7 +941,7 @@ export default function ShoppingApp() {
             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
             </svg>
-            <span className="text-sm font-bold text-white">Dispatch</span>
+            <span className="text-sm font-bold text-white">{activeDispatch.name}</span>
             {cartCount > 0 && (
               <span className="absolute -top-1.5 -right-1.5 text-white text-xs font-black rounded-full w-5 h-5 flex items-center justify-center shadow-md" style={{ backgroundColor: IC.gold }}>
                 {cartCount > 99 ? '99+' : cartCount}
@@ -914,8 +973,50 @@ export default function ShoppingApp() {
         </div>
       )}
 
-      {/* Search bar */}
-      <div className="sticky top-14 z-20 bg-white px-4 py-3 shadow-sm" style={{ borderBottom: `1px solid #E5DDD0` }}>
+      {/* Sticky area: dispatch switcher + search bar */}
+      <div className="sticky top-14 z-20 bg-white shadow-sm" style={{ borderBottom: `1px solid #E5DDD0` }}>
+        {/* Dispatch switcher */}
+        {store && (
+          <div className="px-4 pt-2 overflow-x-auto" style={{ borderBottom: `1px solid #E5DDD0` }}>
+            <div className="flex gap-2 min-w-max pb-2">
+              {dispatches.map(d => {
+                const isActive = d.id === activeDispatchId
+                const count = d.cart.reduce((n, i) => n + i.quantity, 0)
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() => setActiveDispatchId(d.id)}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-all duration-150 active:scale-95"
+                    style={{
+                      backgroundColor: isActive ? IC.green : IC.cream,
+                      color: isActive ? 'white' : IC.green,
+                      border: isActive ? 'none' : `1px solid #E5DDD0`,
+                    }}
+                  >
+                    {d.name}
+                    {count > 0 && (
+                      <span
+                        className="text-xs font-black rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0"
+                        style={{ backgroundColor: isActive ? IC.gold : '#C8BFB0', color: 'white' }}
+                      >
+                        {count > 9 ? '9+' : count}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+              <button
+                onClick={addDispatch}
+                className="flex items-center gap-1 px-3.5 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-all duration-150 active:scale-95"
+                style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
+              >
+                + New
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="px-4 py-3">
         <form onSubmit={(e) => { e.preventDefault(); handleSearch() }} className="max-w-3xl mx-auto">
           <div className="relative">
             <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
@@ -936,6 +1037,7 @@ export default function ShoppingApp() {
             )}
           </div>
         </form>
+        </div>
       </div>
 
       {/* Product grid */}
@@ -981,7 +1083,7 @@ export default function ShoppingApp() {
                     <ProductCard
                       key={fav.productId}
                       product={historyItemToProduct(fav)}
-                      cartItem={cart.find(i => i.product.productId === fav.productId)}
+                      cartItem={activeDispatch.cart.find(i => i.product.productId === fav.productId)}
                       isFavorite={true}
                       onAdd={addToCart}
                       onUpdateQty={updateQty}
@@ -1027,7 +1129,7 @@ export default function ShoppingApp() {
                 <ProductCard
                   key={product.productId}
                   product={product}
-                  cartItem={cart.find((i) => i.product.productId === product.productId)}
+                  cartItem={activeDispatch.cart.find((i) => i.product.productId === product.productId)}
                   isFavorite={favorites.some(f => f.productId === product.productId)}
                   onAdd={addToCart}
                   onUpdateQty={updateQty}
@@ -1053,9 +1155,15 @@ export default function ShoppingApp() {
 
       {cartOpen && (
         <CartPanel
-          cart={cart} orderNote={orderNote} setOrderNote={setOrderNote}
-          onClose={() => setCartOpen(false)} onUpdateQty={updateQty}
-          onUpdateNote={updateNote} onRemove={removeFromCart}
+          dispatch={activeDispatch}
+          canDelete={dispatches.length > 1}
+          onRename={(name) => renameDispatch(activeDispatchId, name)}
+          onDeleteDispatch={() => { deleteDispatch(activeDispatchId); setCartOpen(false) }}
+          onClose={() => setCartOpen(false)}
+          onUpdateQty={updateQty}
+          onUpdateNote={updateNote}
+          onRemove={removeFromCart}
+          onSetNote={setOrderNote}
           onGenerateLink={() => { generateLink(); setCartOpen(false) }}
           onAddReplacement={(id) => setReplacingForId(id)}
           onRemoveReplacement={removeReplacement}
@@ -1063,7 +1171,7 @@ export default function ShoppingApp() {
       )}
 
       {replacingForId && store && (() => {
-        const forItem = cart.find(i => i.product.productId === replacingForId)
+        const forItem = activeDispatch.cart.find(i => i.product.productId === replacingForId)
         if (!forItem) return null
         return (
           <ReplacementPanel

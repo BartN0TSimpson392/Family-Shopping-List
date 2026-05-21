@@ -101,3 +101,10 @@ export interface SharedList {
   items: SharedItem[]
   note: string
 }
+
+export interface Dispatch {
+  id: string
+  name: string
+  cart: CartItem[]
+  note: string
+}
