@@ -663,7 +663,7 @@ function CartPanel({
 // ── ShareModal ────────────────────────────────────────────────────────────────
 
 function ShareModal({ url, copied, onCopy, onClose }: {
-  url: string; copied: boolean; onCopy: () => void; onClose: () => void
+  url: string | null; copied: boolean; onCopy: () => void; onClose: () => void
 }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4">
@@ -685,35 +685,44 @@ function ShareModal({ url, copied, onCopy, onClose }: {
           <p className="text-sm mt-1" style={{ color: IC.textMuted }}>Share this link with your shopper</p>
         </div>
 
-        <div className="rounded-2xl px-4 py-3 mb-4" style={{ backgroundColor: IC.cream, border: '1px solid #E5DDD0' }}>
-          <input
-            readOnly
-            value={url}
-            className="w-full text-sm bg-transparent focus:outline-none truncate font-mono"
-            style={{ color: IC.textMuted }}
-          />
-        </div>
+        {!url ? (
+          <div className="flex flex-col items-center py-4">
+            <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin mb-3" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+            <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Generating link…</p>
+          </div>
+        ) : (
+          <>
+            <div className="rounded-2xl px-4 py-3 mb-4" style={{ backgroundColor: IC.cream, border: '1px solid #E5DDD0' }}>
+              <input
+                readOnly
+                value={url}
+                className="w-full text-sm bg-transparent focus:outline-none truncate font-mono"
+                style={{ color: IC.textMuted }}
+              />
+            </div>
 
-        <button
-          onClick={onCopy}
-          className="w-full py-4 rounded-2xl font-black text-base tracking-widest uppercase transition-all duration-200 active:scale-[0.97] text-white"
-          style={{ backgroundColor: copied ? IC.gold : IC.green }}
-        >
-          {copied ? '✓ Copied!' : 'Copy Link'}
-        </button>
+            <button
+              onClick={onCopy}
+              className="w-full py-4 rounded-2xl font-black text-base tracking-widest uppercase transition-all duration-200 active:scale-[0.97] text-white"
+              style={{ backgroundColor: copied ? IC.gold : IC.green }}
+            >
+              {copied ? '✓ Copied!' : 'Copy Link'}
+            </button>
 
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-4 flex items-center justify-center gap-1 text-sm font-bold hover:underline active:scale-95 transition-all duration-100 uppercase tracking-wider"
-          style={{ color: IC.gold }}
-        >
-          Preview Shopper View
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-          </svg>
-        </a>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 flex items-center justify-center gap-1 text-sm font-bold hover:underline active:scale-95 transition-all duration-100 uppercase tracking-wider"
+              style={{ color: IC.gold }}
+            >
+              Preview Shopper View
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+          </>
+        )}
       </div>
     </div>
   )
@@ -741,6 +750,7 @@ export default function ShoppingApp() {
   const dispatchCounter = useRef(2)
 
   const [shareUrl, setShareUrl] = useState<string | null>(null)
+  const [shareModalOpen, setShareModalOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [replacingForId, setReplacingForId] = useState<string | null>(null)
   const [purchaseHistory, setPurchaseHistory] = useState<HistoryItem[]>([])
@@ -905,14 +915,32 @@ export default function ShoppingApp() {
       addr: `${store.address.addressLine1}, ${store.address.city}, ${store.address.state}`,
       items, note: activeDispatch.note,
     }
-    const json = JSON.stringify(list)
-    const bytes = new TextEncoder().encode(json)
-    let binary = ''
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-    const encoded = btoa(binary)
-    const longUrl = `${window.location.origin}/shop?list=${encoded}`
-    setShareUrl(longUrl); setCopied(false)
-    fetch(`/api/shorten?url=${encodeURIComponent(longUrl)}`).then(r => r.json()).then(data => { if (data.url) setShareUrl(data.url) }).catch(() => {})
+    const listJson = JSON.stringify(list)
+
+    // Open modal immediately in loading state
+    setShareUrl(null)
+    setShareModalOpen(true)
+    setCopied(false)
+
+    // Build fallback URL (encoded in query param) in case the POST fails
+    const buildFallbackUrl = () => {
+      const bytes = new TextEncoder().encode(listJson)
+      let binary = ''
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+      return `${window.location.origin}/shop?list=${btoa(binary)}`
+    }
+
+    fetch('/api/lists', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: listJson,
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.id) setShareUrl(`${window.location.origin}/shop?id=${data.id}`)
+        else setShareUrl(buildFallbackUrl())
+      })
+      .catch(() => setShareUrl(buildFallbackUrl()))
   }, [store, activeDispatch])
 
   const copyUrl = useCallback(() => {
@@ -1168,7 +1196,7 @@ export default function ShoppingApp() {
           onUpdateNote={updateNote}
           onRemove={removeFromCart}
           onSetNote={setOrderNote}
-          onGenerateLink={() => { generateLink(); setCartOpen(false) }}
+          onGenerateLink={() => { setCartOpen(false); generateLink() }}
           onAddReplacement={(id) => setReplacingForId(id)}
           onRemoveReplacement={removeReplacement}
         />
@@ -1186,8 +1214,8 @@ export default function ShoppingApp() {
         )
       })()}
 
-      {shareUrl && (
-        <ShareModal url={shareUrl} copied={copied} onCopy={copyUrl} onClose={() => setShareUrl(null)} />
+      {shareModalOpen && (
+        <ShareModal url={shareUrl} copied={copied} onCopy={copyUrl} onClose={() => { setShareModalOpen(false); setShareUrl(null) }} />
       )}
     </div>
   )

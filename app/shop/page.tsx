@@ -2,7 +2,7 @@
 
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { SharedList, SharedItem } from '@/lib/types'
 
 const IC = {
@@ -63,13 +63,41 @@ function groupByAisle(items: SharedItem[]): Map<string, SharedItem[]> {
 
 function ShopContent() {
   const searchParams = useSearchParams()
+  const idParam = searchParams.get('id')
   const listParam = searchParams.get('list')
+
+  const [list, setList] = useState<SharedList | null>(null)
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error' | 'empty'>('loading')
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [confirmedQtys, setConfirmedQtys] = useState<Record<string, number>>({})
   const [qtyConfirmItem, setQtyConfirmItem] = useState<SharedItem | null>(null)
   const [qtyConfirmValue, setQtyConfirmValue] = useState(1)
 
-  if (!listParam) {
+  useEffect(() => {
+    if (idParam) {
+      fetch(`/api/lists?id=${encodeURIComponent(idParam)}`)
+        .then(r => { if (!r.ok) throw new Error('not found'); return r.json() })
+        .then((data: SharedList) => { setList(data); setLoadState('ready') })
+        .catch(() => setLoadState('error'))
+    } else if (listParam) {
+      const decoded = decodeList(listParam)
+      if (decoded) { setList(decoded); setLoadState('ready') }
+      else setLoadState('error')
+    } else {
+      setLoadState('empty')
+    }
+  }, [idParam, listParam])
+
+  if (loadState === 'loading') {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4" style={{ backgroundColor: IC.green }}>
+        <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+        <p className="font-bold text-sm uppercase tracking-widest" style={{ color: IC.gold }}>Loading dispatch…</p>
+      </div>
+    )
+  }
+
+  if (loadState === 'empty') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ backgroundColor: IC.green }}>
         <RadarLogoWhite className="w-20 h-20 mb-6 opacity-60" />
@@ -82,12 +110,11 @@ function ShopContent() {
     )
   }
 
-  const list = decodeList(listParam)
-
-  if (!list) {
+  if (loadState === 'error' || !list) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ backgroundColor: IC.green }}>
-        <p className="text-white font-bold text-lg mb-4">Couldn't decode this dispatch — the link may be corrupted.</p>
+        <RadarLogoWhite className="w-20 h-20 mb-6 opacity-60" />
+        <p className="text-white font-bold text-lg mb-4">Couldn't load this dispatch — the link may be expired or corrupted.</p>
         <a href="/" className="font-bold px-6 py-3 rounded-2xl active:scale-95 transition-all duration-100 uppercase tracking-widest text-sm" style={{ backgroundColor: IC.gold, color: IC.green }}>
           Open Inner Circle →
         </a>
