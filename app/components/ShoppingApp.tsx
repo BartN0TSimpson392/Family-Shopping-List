@@ -5,6 +5,9 @@ import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryI
 
 const HISTORY_KEY = 'ic-purchase-history'
 const FAVORITES_KEY = 'ic-favorites'
+const STORE_KEY = 'ic-store'
+const DISPATCHES_KEY = 'ic-dispatches'
+const COUNTER_KEY = 'ic-dispatch-counter'
 
 function loadHistory(): HistoryItem[] {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
@@ -17,6 +20,24 @@ function loadFavorites(): HistoryItem[] {
 }
 function saveFavorites(items: HistoryItem[]) {
   try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(items)) } catch { /* ignore */ }
+}
+function loadStore(): KrogerLocation | null {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null') } catch { return null }
+}
+function saveStore(s: KrogerLocation | null) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(s)) } catch { /* ignore */ }
+}
+function loadDispatches(): Dispatch[] | null {
+  try { return JSON.parse(localStorage.getItem(DISPATCHES_KEY) ?? 'null') } catch { return null }
+}
+function saveDispatches(d: Dispatch[]) {
+  try { localStorage.setItem(DISPATCHES_KEY, JSON.stringify(d)) } catch { /* ignore */ }
+}
+function loadCounter(): number {
+  try { return parseInt(localStorage.getItem(COUNTER_KEY) ?? '2', 10) } catch { return 2 }
+}
+function saveCounter(n: number) {
+  try { localStorage.setItem(COUNTER_KEY, String(n)) } catch { /* ignore */ }
 }
 function historyItemToProduct(h: HistoryItem): KrogerProduct {
   return {
@@ -118,6 +139,104 @@ function RadarLogoWhite({ className = '' }: { className?: string }) {
       <circle cx="60" cy="60" r="5.5" fill={IC.gold}/>
       <circle cx="60" cy="60" r="2" fill="white"/>
     </svg>
+  )
+}
+
+// ── HomeScreen ────────────────────────────────────────────────────────────────
+
+function HomeScreen({
+  store, dispatches, activeDispatchId, onChangeStore, onOpenDispatch, onAddDispatch,
+}: {
+  store: KrogerLocation
+  dispatches: Dispatch[]
+  activeDispatchId: string
+  onChangeStore: () => void
+  onOpenDispatch: (id: string) => void
+  onAddDispatch: () => void
+}) {
+  return (
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
+      <header className="sticky top-0 z-30 shadow-lg" style={{ backgroundColor: IC.green }}>
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-2.5">
+          <RadarLogoWhite className="w-7 h-7" />
+          <div>
+            <span className="font-black text-white tracking-[0.12em] uppercase text-base leading-none block">Inner Circle</span>
+            <span className="text-[9px] font-bold tracking-[0.3em] uppercase leading-none block" style={{ color: IC.gold }}>Private Dispatch</span>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex-1 px-4 py-8 max-w-lg mx-auto w-full space-y-6">
+        {/* Store card */}
+        <div className="bg-white rounded-2xl px-5 py-4 shadow-sm" style={{ border: '1px solid #E5DDD0' }}>
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-2" style={{ color: IC.textMuted }}>Your Store</p>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="font-bold text-base" style={{ color: IC.green }}>{store.name}</p>
+              <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
+                {store.address.addressLine1}, {store.address.city}, {store.address.state}
+              </p>
+            </div>
+            <button
+              onClick={onChangeStore}
+              className="text-xs font-bold flex-shrink-0 active:scale-95 transition-all duration-100"
+              style={{ color: IC.gold }}
+            >Change Store</button>
+          </div>
+        </div>
+
+        {/* Dispatches */}
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-3" style={{ color: IC.textMuted }}>Your Dispatches</p>
+          <div className="space-y-2">
+            {dispatches.map(d => {
+              const itemCount = d.cart.reduce((n, i) => n + i.quantity, 0)
+              const total = d.cart.reduce((sum, i) => sum + getPrice(i.product) * i.quantity, 0)
+              const isActive = d.id === activeDispatchId
+              return (
+                <button
+                  key={d.id}
+                  onClick={() => onOpenDispatch(d.id)}
+                  className="w-full bg-white rounded-2xl px-5 py-4 flex items-center justify-between text-left transition-all duration-150 active:scale-[0.98] shadow-sm"
+                  style={{ border: isActive ? `2px solid ${IC.gold}` : '1px solid #E5DDD0' }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                    <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
+                      {itemCount === 0
+                        ? 'Empty — tap to start adding items'
+                        : `${itemCount} item${itemCount !== 1 ? 's' : ''}${total > 0 ? ` · $${total.toFixed(2)} est.` : ''}`}
+                    </p>
+                  </div>
+                  <svg className="w-5 h-5 flex-shrink-0 ml-3" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              )
+            })}
+
+            <button
+              onClick={onAddDispatch}
+              className="w-full rounded-2xl px-5 py-4 flex items-center gap-2 transition-all duration-150 active:scale-[0.98]"
+              style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+              </svg>
+              <span className="font-bold text-sm">New Dispatch</span>
+            </button>
+          </div>
+        </div>
+
+        <button
+          onClick={() => onOpenDispatch(activeDispatchId)}
+          className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] shadow-md"
+          style={{ backgroundColor: IC.green }}
+        >
+          Start Shopping →
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -732,8 +851,8 @@ function ShareModal({ url, copied, onCopy, onClose }: {
 
 export default function ShoppingApp() {
   const [store, setStore] = useState<KrogerLocation | null>(null)
+  const [shoppingActive, setShoppingActive] = useState(false)
   const [locationResults, setLocationResults] = useState<KrogerLocation[]>([])
-  const [showLocationSearch, setShowLocationSearch] = useState(false)
   const [locationLoading, setLocationLoading] = useState(false)
   const [locationError, setLocationError] = useState('')
 
@@ -757,8 +876,25 @@ export default function ShoppingApp() {
   const [favorites, setFavorites] = useState<HistoryItem[]>([])
   const [activeTab, setActiveTab] = useState<'favorites' | 'recent'>('favorites')
 
-  useEffect(() => { setPurchaseHistory(loadHistory()) }, [])
-  useEffect(() => { setFavorites(loadFavorites()) }, [])
+  // Load persisted data on mount
+  useEffect(() => {
+    setPurchaseHistory(loadHistory())
+    setFavorites(loadFavorites())
+    const savedStore = loadStore()
+    const savedDispatches = loadDispatches()
+    const savedCounter = loadCounter()
+    if (savedStore) setStore(savedStore)
+    if (savedDispatches && savedDispatches.length > 0) {
+      setDispatches(savedDispatches)
+      setActiveDispatchId(savedDispatches[0].id)
+      dispatchCounter.current = savedCounter
+    }
+  }, [])
+
+  // Persist store and dispatches whenever they change
+  useEffect(() => { saveStore(store) }, [store])
+  useEffect(() => { saveDispatches(dispatches) }, [dispatches])
+
   useEffect(() => {
     const allItems = dispatches.flatMap(d => d.cart)
     if (allItems.length === 0) return
@@ -783,8 +919,9 @@ export default function ShoppingApp() {
   }, [])
 
   const selectStore = useCallback((loc: KrogerLocation) => {
-    setStore(loc); setLocationResults([]); setShowLocationSearch(false)
+    setStore(loc); setLocationResults([])
     setProducts([]); setSearchQuery(''); setSearchStart(0); setSearchTotal(0)
+    setShoppingActive(false)
   }, [])
 
   const runSearch = useCallback(async (term: string, start: number) => {
@@ -855,9 +992,11 @@ export default function ShoppingApp() {
 
   const addDispatch = useCallback(() => {
     const num = dispatchCounter.current++
+    saveCounter(dispatchCounter.current)
     const d: Dispatch = { id: `dispatch-${Date.now()}`, name: `Dispatch ${num}`, cart: [], note: '' }
     setDispatches(prev => [...prev, d])
     setActiveDispatchId(d.id)
+    setShoppingActive(true)
   }, [])
 
   const renameDispatch = useCallback((id: string, name: string) => {
@@ -948,8 +1087,21 @@ export default function ShoppingApp() {
     navigator.clipboard.writeText(shareUrl).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }, [shareUrl])
 
-  if (!store && !showLocationSearch) {
+  if (!store) {
     return <StorePicker locationResults={locationResults} isLoading={locationLoading} error={locationError} onSearch={searchLocations} onSelect={selectStore} />
+  }
+
+  if (!shoppingActive) {
+    return (
+      <HomeScreen
+        store={store}
+        dispatches={dispatches}
+        activeDispatchId={activeDispatchId}
+        onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
+        onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
+        onAddDispatch={addDispatch}
+      />
+    )
   }
 
   return (
@@ -957,13 +1109,17 @@ export default function ShoppingApp() {
       {/* Header */}
       <header className="sticky top-0 z-30 shadow-lg" style={{ backgroundColor: IC.green }}>
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => { setShoppingActive(false); setSearchQuery(''); setProducts([]) }}
+            className="flex items-center gap-2.5 active:opacity-75 transition-opacity duration-100"
+            aria-label="Back to home"
+          >
             <RadarLogoWhite className="w-7 h-7" />
             <div>
               <span className="font-black text-white tracking-[0.12em] uppercase text-base leading-none block">Inner Circle</span>
               <span className="text-[9px] font-bold tracking-[0.3em] uppercase leading-none block" style={{ color: IC.gold }}>Private Dispatch</span>
             </div>
-          </div>
+          </button>
           <button
             onClick={() => setCartOpen(true)}
             className="relative flex items-center gap-1.5 rounded-full px-3 py-1.5 transition-all duration-100 active:scale-95"
@@ -998,7 +1154,7 @@ export default function ShoppingApp() {
             </div>
           </div>
           <button
-            onClick={() => { setStore(null); setLocationResults([]); setProducts([]) }}
+            onClick={() => { setStore(null); setLocationResults([]); setProducts([]); setShoppingActive(false) }}
             className="ml-3 text-xs font-bold active:scale-95 transition-all duration-100 whitespace-nowrap"
             style={{ color: IC.gold }}
           >Change</button>
