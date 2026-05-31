@@ -1778,25 +1778,43 @@ export default function ShoppingApp() {
   }, [updateActiveDispatch])
 
   const toggleFavorite = useCallback((product: KrogerProduct) => {
-    setFavorites(prev => {
-      const isFav = prev.some(f => f.productId === product.productId)
-      const next = isFav
-        ? prev.filter(f => f.productId !== product.productId)
-        : [...prev, {
-            productId: product.productId,
-            description: product.description,
-            brand: product.brand || '',
-            img: getProductImage(product, 'thumbnail') || getProductImage(product, 'small'),
-            size: product.items?.[0]?.size ?? '',
-            price: product.items?.[0]?.price?.regular ?? 0,
-          }]
-      saveFavorites(next)
-      return next
-    })
-  }, [])
+    const fav: HistoryItem = {
+      productId: product.productId,
+      description: product.description,
+      brand: product.brand || '',
+      img: getProductImage(product, 'thumbnail') || getProductImage(product, 'small'),
+      size: product.items?.[0]?.size ?? '',
+      price: product.items?.[0]?.price?.regular ?? 0,
+    }
+    if (familyId) {
+      const isFav = favorites.some(f => f.productId === product.productId)
+      if (isFav) {
+        deleteDoc(doc(db, 'families', familyId, 'favorites', product.productId))
+      } else {
+        setDoc(doc(db, 'families', familyId, 'favorites', product.productId), fav)
+      }
+    } else {
+      setFavorites(prev => {
+        const isFav = prev.some(f => f.productId === product.productId)
+        const next = isFav ? prev.filter(f => f.productId !== product.productId) : [...prev, fav]
+        saveFavorites(next)
+        return next
+      })
+    }
+  }, [familyId, favorites])
 
   const activeDispatch = dispatches.find(d => d.id === activeDispatchId) ?? dispatches[0]
   const cartCount = activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)
+
+  // Sync favorites with Firestore when family is set
+  useEffect(() => {
+    if (!familyId) return
+    const unsub = onSnapshot(collection(db, 'families', familyId, 'favorites'), snap => {
+      const favs = snap.docs.map(d => d.data() as HistoryItem)
+      setFavorites(favs)
+    })
+    return unsub
+  }, [familyId])
 
   // Load family members from Firestore in real time
   useEffect(() => {

@@ -3,7 +3,7 @@
 import { Suspense } from 'react'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { collection, doc, onSnapshot, query, where, updateDoc } from 'firebase/firestore'
+import { collection, doc, onSnapshot, query, where, updateDoc, setDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import type { LiveDispatch, MemberRole, SharedItem } from '@/lib/types'
 
@@ -167,15 +167,17 @@ function groupByAisle(items: SharedItem[]): Map<string, SharedItem[]> {
 }
 
 function DispatchDetailScreen({
-  dispatch, onToggle, onConfirmQty, onBack,
+  dispatch, onToggle, onConfirmQty, onBack, onCheckout,
 }: {
   dispatch: LiveDispatch
   onToggle: (itemId: string, checked: boolean) => void
   onConfirmQty: (itemId: string, qty: number) => void
   onBack: () => void
+  onCheckout: () => void
 }) {
   const [qtyItem, setQtyItem] = useState<SharedItem | null>(null)
   const [qtyValue, setQtyValue] = useState(1)
+  const [detailItem, setDetailItem] = useState<SharedItem | null>(null)
 
   const total = dispatch.items.reduce((n, i) => n + i.qty, 0)
   const checkedCount = dispatch.checkedItems.length
@@ -276,29 +278,33 @@ function DispatchDetailScreen({
                   const confirmedQty = dispatch.confirmedQtys[item.id]
                   return (
                     <li key={item.id}>
-                      <button
-                        onClick={() => handleItemPress(item)}
-                        className="w-full text-left rounded-2xl transition-all duration-200 active:scale-[0.98]"
+                      <div
+                        className="w-full text-left rounded-2xl transition-all duration-200"
                         style={{
                           backgroundColor: isDone ? '#EDE8DA' : 'white',
                           border: isDone ? `2px solid ${IC.gold}50` : '1px solid #E5DDD0',
                         }}
                       >
                         <div className="flex items-start gap-3 p-3">
-                          <div className="flex-shrink-0 mt-0.5 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all duration-200"
+                          <button
+                            onClick={() => handleItemPress(item)}
+                            className="flex-shrink-0 mt-0.5 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all duration-200 active:scale-90"
                             style={{ backgroundColor: isDone ? IC.gold : 'transparent', borderColor: isDone ? IC.gold : '#C8BFB0' }}>
                             {isDone && (
                               <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                               </svg>
                             )}
-                          </div>
+                          </button>
                           {item.img && (
                             <img src={item.img} alt={item.name} loading="lazy"
                               className="w-14 h-14 object-contain flex-shrink-0 transition-all duration-200"
                               style={{ opacity: isDone ? 0.35 : 1, filter: isDone ? 'grayscale(1)' : 'none' }} />
                           )}
-                          <div className="flex-1 min-w-0">
+                          <button
+                            onClick={() => setDetailItem(item)}
+                            className="flex-1 min-w-0 text-left active:opacity-70 transition-opacity"
+                          >
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0 flex-1">
                                 {item.brand && (
@@ -309,7 +315,7 @@ function DispatchDetailScreen({
                                   style={{ color: isDone ? '#9DB8A8' : IC.green, textDecoration: isDone ? 'line-through' : 'none' }}>
                                   {item.name}
                                 </p>
-                                {item.size && <p className="text-xs mt-0.5" style={{ color: isDone ? '#B8C8C0' : IC.textMuted }}>{item.size}</p>}
+                                {item.size && <p className="text-xs mt-0.5 font-semibold" style={{ color: isDone ? '#B8C8C0' : IC.gold }}>{item.size}</p>}
                               </div>
                               <div className="flex-shrink-0 text-right">
                                 <span className="inline-flex items-center justify-center min-w-[2rem] h-7 rounded-full text-sm font-black px-2 transition-all duration-200"
@@ -343,9 +349,9 @@ function DispatchDetailScreen({
                                 </div>
                               </div>
                             )}
-                          </div>
+                          </button>
                         </div>
-                      </button>
+                      </div>
                     </li>
                   )
                 })}
@@ -354,14 +360,97 @@ function DispatchDetailScreen({
           )
         })}
 
-        {allDone && (
-          <div className="rounded-3xl px-6 py-8 text-center shadow-xl" style={{ backgroundColor: IC.green }}>
-            <RadarLogoWhite className="w-16 h-16 mx-auto mb-4" />
-            <p className="font-black text-white text-2xl uppercase tracking-widest">Mission Complete</p>
-            <p className="text-sm mt-2 font-medium" style={{ color: IC.gold }}>Every item has been collected.</p>
-          </div>
-        )}
       </main>
+
+      {allDone && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6" style={{ backgroundColor: `${IC.green}F0` }}>
+          <RadarLogoWhite className="w-20 h-20 mb-6" />
+          <p className="font-black text-white text-3xl uppercase tracking-widest text-center mb-2">Mission Complete</p>
+          <p className="text-sm font-medium text-center mb-2" style={{ color: IC.gold }}>Every item has been collected.</p>
+          <p className="text-sm text-white opacity-60 text-center mb-10">{checkedCount} item{checkedCount !== 1 ? 's' : ''} · {dispatch.store}</p>
+          <div className="w-full max-w-sm space-y-3">
+            <button
+              onClick={onCheckout}
+              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+              style={{ backgroundColor: IC.gold, color: IC.green }}
+            >Checkout & Save to History →</button>
+            <button
+              onClick={onBack}
+              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
+              style={{ border: '2px solid rgba(255,255,255,0.3)' }}
+            >Back to Dispatches</button>
+          </div>
+        </div>
+      )}
+
+      {detailItem && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setDetailItem(null)} />
+          <div className="relative bg-white rounded-t-3xl shadow-2xl px-5 pt-4 pb-10 max-h-[85vh] overflow-y-auto">
+            <div className="flex justify-center mb-4">
+              <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
+            </div>
+            <div className="flex gap-4 mb-4">
+              {detailItem.img && (
+                <img src={detailItem.img} alt={detailItem.name} className="w-24 h-24 object-contain flex-shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                {detailItem.brand && (
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-1" style={{ color: IC.textMuted }}>{detailItem.brand}</p>
+                )}
+                <p className="text-base font-black leading-snug" style={{ color: IC.green }}>{detailItem.name}</p>
+                {detailItem.size && (
+                  <p className="text-sm font-bold mt-1" style={{ color: IC.gold }}>{detailItem.size}</p>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center py-2" style={{ borderBottom: '1px solid #E5DDD0' }}>
+                <span className="text-sm font-semibold" style={{ color: IC.textMuted }}>Quantity needed</span>
+                <span className="text-sm font-black" style={{ color: IC.green }}>×{detailItem.qty}</span>
+              </div>
+              {detailItem.price > 0 && (
+                <div className="flex justify-between items-center py-2" style={{ borderBottom: '1px solid #E5DDD0' }}>
+                  <span className="text-sm font-semibold" style={{ color: IC.textMuted }}>Price (est.)</span>
+                  <span className="text-sm font-black" style={{ color: IC.gold }}>${(detailItem.price * detailItem.qty).toFixed(2)}</span>
+                </div>
+              )}
+              {detailItem.aisle && detailItem.aisle !== 'Other' && (
+                <div className="flex justify-between items-center py-2" style={{ borderBottom: '1px solid #E5DDD0' }}>
+                  <span className="text-sm font-semibold" style={{ color: IC.textMuted }}>Aisle</span>
+                  <span className="text-sm font-black" style={{ color: IC.green }}>{detailItem.aisle} {detailItem.aisleNum ? `(#${detailItem.aisleNum})` : ''}</span>
+                </div>
+              )}
+              {detailItem.note && (
+                <div className="py-2" style={{ borderBottom: '1px solid #E5DDD0' }}>
+                  <p className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: IC.textMuted }}>Note from orderer</p>
+                  <p className="text-sm font-medium" style={{ color: IC.green }}>{detailItem.note}</p>
+                </div>
+              )}
+              {detailItem.sub && (
+                <div className="py-2">
+                  <p className="text-xs font-black uppercase tracking-widest mb-2" style={{ color: IC.gold }}>If unavailable, substitute with:</p>
+                  <div className="flex items-center gap-3 bg-white rounded-2xl p-3" style={{ border: `1px solid ${IC.gold}40` }}>
+                    {detailItem.sub.img && <img src={detailItem.sub.img} alt={detailItem.sub.name} className="w-12 h-12 object-contain flex-shrink-0" />}
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold" style={{ color: IC.green }}>{detailItem.sub.name}</p>
+                      <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>{detailItem.sub.size} · ×{detailItem.sub.qty}</p>
+                      {detailItem.sub.price > 0 && <p className="text-xs font-bold" style={{ color: IC.gold }}>${(detailItem.sub.price * detailItem.sub.qty).toFixed(2)}</p>}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => { handleItemPress(detailItem); setDetailItem(null) }}
+              className="w-full mt-5 py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
+              style={{ backgroundColor: dispatch.checkedItems.includes(detailItem.id) ? '#9B8470' : IC.green }}
+            >
+              {dispatch.checkedItems.includes(detailItem.id) ? 'Unmark as Collected' : 'Mark as Collected ✓'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {qtyItem && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end">
@@ -401,6 +490,7 @@ type Screen = 'loading' | 'dispatches' | 'detail' | 'noaccess'
 function ShopContent() {
   const router = useRouter()
   const [screen, setScreen] = useState<Screen>('loading')
+  const [familyId, setFamilyId] = useState<string | null>(null)
   const [memberId, setMemberId] = useState<string | null>(null)
   const [memberName, setMemberName] = useState<string | null>(null)
   const [memberRoles, setMemberRoles] = useState<MemberRole[]>([])
@@ -408,6 +498,7 @@ function ShopContent() {
   const [activeDispatch, setActiveDispatch] = useState<LiveDispatch | null>(null)
 
   useEffect(() => {
+    const fid = localStorage.getItem(FAMILY_ID_KEY)
     const mid = localStorage.getItem(MEMBER_ID_KEY)
     const mname = localStorage.getItem(MEMBER_NAME_KEY)
     const mroles = localStorage.getItem(MEMBER_ROLES_KEY)
@@ -418,6 +509,7 @@ function ShopContent() {
           setScreen('noaccess')
           return
         }
+        setFamilyId(fid)
         setMemberId(mid)
         setMemberName(mname)
         setMemberRoles(roles)
@@ -435,7 +527,7 @@ function ShopContent() {
     const q = query(
       collection(db, 'dispatches'),
       where('shopperId', '==', memberId),
-      where('status', 'in', ['pending', 'shopping'])
+      where('status', 'in', ['pending', 'shopping', 'complete'])
     )
     const unsub = onSnapshot(q, snap => {
       const docs = snap.docs.map(d => d.data() as LiveDispatch).sort((a, b) => b.createdAt - a.createdAt)
@@ -444,6 +536,27 @@ function ShopContent() {
     })
     return unsub
   }, [memberId])
+
+  const handleCheckout = async () => {
+    if (!activeDispatch) return
+    const ref = doc(db, 'dispatches', activeDispatch.id)
+    await updateDoc(ref, { status: 'archived' })
+    if (familyId) {
+      await setDoc(doc(db, 'families', familyId, 'orderHistory', activeDispatch.id), {
+        id: activeDispatch.id,
+        name: activeDispatch.name,
+        store: activeDispatch.store,
+        addr: activeDispatch.addr,
+        items: activeDispatch.items,
+        shopperId: activeDispatch.shopperId,
+        shopperName: activeDispatch.shopperName,
+        completedAt: Date.now(),
+        totalItems: activeDispatch.items.reduce((n, i) => n + i.qty, 0),
+      })
+    }
+    setActiveDispatch(null)
+    setScreen('dispatches')
+  }
 
   const switchToOrders = () => {
     if (memberRoles.includes('order') || memberRoles.includes('admin')) {
@@ -492,7 +605,7 @@ function ShopContent() {
     return (
       <DispatchListScreen
         shopperName={memberName!}
-        dispatches={dispatches}
+        dispatches={dispatches.filter(d => d.status !== 'complete')}
         hasOrderRole={memberRoles.includes('order') || memberRoles.includes('admin')}
         onOpen={d => { setActiveDispatch(d); setScreen('detail') }}
         onSwitchToOrders={switchToOrders}
@@ -507,6 +620,7 @@ function ShopContent() {
         onToggle={toggleItem}
         onConfirmQty={confirmQty}
         onBack={() => setScreen('dispatches')}
+        onCheckout={handleCheckout}
       />
     )
   }
