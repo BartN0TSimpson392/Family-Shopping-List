@@ -146,7 +146,7 @@ export interface LiveDispatch {
   shopperId: string
   shopperName: string
   createdAt: number
-  status: 'pending' | 'shopping' | 'complete'
+  status: 'pending' | 'shopping' | 'complete' | 'archived'
   checkedItems: string[]
   confirmedQtys: Record<string, number>
   familyId?: string

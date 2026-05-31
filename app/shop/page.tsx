@@ -583,11 +583,13 @@ function ShopContent() {
     if (!memberId) return
     const q = query(
       collection(db, 'dispatches'),
-      where('shopperId', '==', memberId),
-      where('status', 'in', ['pending', 'shopping', 'complete'])
+      where('shopperId', '==', memberId)
     )
     const unsub = onSnapshot(q, snap => {
-      const docs = snap.docs.map(d => d.data() as LiveDispatch).sort((a, b) => b.createdAt - a.createdAt)
+      const docs = snap.docs
+        .map(d => d.data() as LiveDispatch)
+        .filter(d => d.status !== 'archived')
+        .sort((a, b) => b.createdAt - a.createdAt)
       setDispatches(docs)
       setActiveDispatch(prev => prev ? (docs.find(d => d.id === prev.id) ?? prev) : prev)
     })
