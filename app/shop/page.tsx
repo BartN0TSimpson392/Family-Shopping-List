@@ -112,11 +112,16 @@ function DispatchListScreen({
                   key={d.id}
                   onClick={() => onOpen(d)}
                   className="w-full bg-white rounded-2xl px-5 py-4 text-left transition-all duration-150 active:scale-[0.98] shadow-sm"
-                  style={{ border: '1px solid #E5DDD0' }}
+                  style={{ border: d.status === 'complete' ? `1px solid ${IC.gold}60` : '1px solid #E5DDD0' }}
                 >
                   <div className="flex items-start justify-between gap-3 mb-3">
                     <div className="min-w-0 flex-1">
-                      <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                        {d.status === 'complete' && (
+                          <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${IC.gold}20`, color: IC.gold }}>All Found ✓</span>
+                        )}
+                      </div>
                       <p className="text-xs mt-0.5 truncate" style={{ color: IC.textMuted }}>{d.store} · {d.addr}</p>
                     </div>
                     <div className="flex-shrink-0 text-right">
@@ -202,7 +207,9 @@ function DispatchDetailScreen({
     setQtyItem(null)
   }
 
-  const groups = groupByAisle(dispatch.items)
+  const uncheckedItems = dispatch.items.filter(i => !dispatch.checkedItems.includes(i.id))
+  const checkedItems = dispatch.items.filter(i => dispatch.checkedItems.includes(i.id))
+  const groups = groupByAisle(uncheckedItems)
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: IC.cream }}>
@@ -359,6 +366,56 @@ function DispatchDetailScreen({
             </section>
           )
         })}
+
+        {checkedItems.length > 0 && (
+          <section>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center" style={{ backgroundColor: IC.gold }}>
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h2 className="font-black text-sm uppercase tracking-wider" style={{ color: IC.textMuted }}>Items Found</h2>
+              <span className="text-xs font-bold ml-auto" style={{ color: IC.textMuted }}>{checkedItems.length}</span>
+            </div>
+            <ul className="space-y-2">
+              {checkedItems.map(item => {
+                const confirmedQty = dispatch.confirmedQtys[item.id]
+                return (
+                  <li key={item.id}>
+                    <div className="w-full text-left rounded-2xl transition-all duration-200" style={{ backgroundColor: '#EDE8DA', border: `2px solid ${IC.gold}50` }}>
+                      <div className="flex items-start gap-3 p-3">
+                        <button
+                          onClick={() => handleItemPress(item)}
+                          className="flex-shrink-0 mt-0.5 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all duration-200 active:scale-90"
+                          style={{ backgroundColor: IC.gold, borderColor: IC.gold }}>
+                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        </button>
+                        {item.img && (
+                          <img src={item.img} alt={item.name} loading="lazy" className="w-14 h-14 object-contain flex-shrink-0 opacity-40 grayscale" />
+                        )}
+                        <button onClick={() => setDetailItem(item)} className="flex-1 min-w-0 text-left active:opacity-70 transition-opacity">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              {item.brand && <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{ color: '#9DB8A8' }}>{item.brand}</p>}
+                              <p className="text-sm font-bold leading-tight line-through" style={{ color: '#9DB8A8' }}>{item.name}</p>
+                              {item.size && <p className="text-xs mt-0.5" style={{ color: '#B8C8C0' }}>{item.size}</p>}
+                            </div>
+                            <span className="inline-flex items-center justify-center min-w-[2rem] h-7 rounded-full text-sm font-black px-2" style={{ backgroundColor: '#E5DDD0', color: '#9DB8A8' }}>
+                              ×{confirmedQty !== undefined ? confirmedQty : item.qty}
+                            </span>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+        )}
 
       </main>
 
@@ -605,7 +662,7 @@ function ShopContent() {
     return (
       <DispatchListScreen
         shopperName={memberName!}
-        dispatches={dispatches.filter(d => d.status !== 'complete')}
+        dispatches={dispatches}
         hasOrderRole={memberRoles.includes('order') || memberRoles.includes('admin')}
         onOpen={d => { setActiveDispatch(d); setScreen('detail') }}
         onSwitchToOrders={switchToOrders}
