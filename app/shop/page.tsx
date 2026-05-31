@@ -184,6 +184,14 @@ function DispatchDetailScreen({
   const [qtyValue, setQtyValue] = useState(1)
   const [detailItem, setDetailItem] = useState<SharedItem | null>(null)
   const [showDoneModal, setShowDoneModal] = useState(false)
+  const [addressCopied, setAddressCopied] = useState(false)
+
+  const copyAddress = () => {
+    navigator.clipboard.writeText(`${dispatch.store}, ${dispatch.addr}`).then(() => {
+      setAddressCopied(true)
+      setTimeout(() => setAddressCopied(false), 2000)
+    }).catch(() => {})
+  }
 
   const total = dispatch.items.reduce((n, i) => n + i.qty, 0)
   const checkedCount = dispatch.checkedItems.length
@@ -229,8 +237,12 @@ function DispatchDetailScreen({
                 <span className="text-[10px] font-black uppercase tracking-widest">All Dispatches</span>
               </button>
               <h1 className="font-black text-xl text-white uppercase tracking-wider leading-tight">{dispatch.name}</h1>
-              <p className="text-xs truncate mt-0.5" style={{ color: IC.gold }}>{dispatch.store}</p>
-              <p className="text-xs truncate opacity-60 text-white">{dispatch.addr}</p>
+              <button onClick={copyAddress} className="text-left active:opacity-70 transition-opacity mt-0.5">
+                <p className="text-xs truncate" style={{ color: addressCopied ? '#86efac' : IC.gold }}>
+                  {addressCopied ? '✓ Address copied!' : dispatch.store}
+                </p>
+                {!addressCopied && <p className="text-xs truncate opacity-60 text-white">{dispatch.addr} · tap to copy</p>}
+              </button>
             </div>
             <div className="text-right flex-shrink-0 rounded-2xl px-3 py-2" style={{ backgroundColor: 'rgba(255,255,255,0.12)' }}>
               <p className="text-3xl font-black text-white leading-none">{checkedCount}</p>
@@ -243,7 +255,9 @@ function DispatchDetailScreen({
           </div>
           <div className="flex justify-between mt-1.5">
             <p className="text-xs font-medium opacity-60 text-white">{Math.round(progress)}% complete</p>
-            {allDone && <p className="text-xs font-black" style={{ color: IC.gold }}>Mission complete ✓</p>}
+            {dispatch.tip !== undefined && dispatch.tip > 0 && (
+              <p className="text-xs font-black" style={{ color: IC.gold }}>Tip: ${dispatch.tip.toFixed(2)}</p>
+            )}
           </div>
         </div>
       </header>
@@ -638,6 +652,17 @@ function ShopContent() {
         completedAt: Date.now(),
         totalItems: activeDispatch.items.reduce((n, i) => n + i.qty, 0),
       })
+      // Write each item to family purchase history
+      await Promise.all(activeDispatch.items.map(item =>
+        setDoc(doc(db, 'families', familyId, 'purchaseHistory', item.id), {
+          productId: item.id,
+          description: item.name,
+          brand: item.brand,
+          img: item.img,
+          size: item.size,
+          price: item.price,
+        })
+      ))
     }
     setActiveDispatch(null)
     setScreen('dispatches')

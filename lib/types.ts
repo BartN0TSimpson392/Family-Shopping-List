@@ -107,6 +107,7 @@ export interface Dispatch {
   name: string
   cart: CartItem[]
   note: string
+  tip?: number
   firestoreId?: string
   shopperId?: string
   shopperName?: string
@@ -150,4 +151,5 @@ export interface LiveDispatch {
   checkedItems: string[]
   confirmedQtys: Record<string, number>
   familyId?: string
+  tip?: number
 }

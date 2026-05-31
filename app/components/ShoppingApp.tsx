@@ -1239,7 +1239,7 @@ function ReplacementPanel({
 function CartPanel({
   dispatch, canDelete, onRename, onDeleteDispatch,
   onClose, onUpdateQty, onUpdateNote, onRemove, onSendDispatch,
-  onAddReplacement, onRemoveReplacement, onSetNote, liveCheckedItems,
+  onAddReplacement, onRemoveReplacement, onSetNote, onSetTip, liveCheckedItems,
 }: {
   dispatch: Dispatch
   canDelete: boolean
@@ -1253,9 +1253,12 @@ function CartPanel({
   onAddReplacement: (productId: string) => void
   onRemoveReplacement: (productId: string) => void
   onSetNote: (note: string) => void
+  onSetTip: (tip: number) => void
   liveCheckedItems?: string[]
 }) {
   const cartTotal = dispatch.cart.reduce((sum, item) => sum + getPrice(item.product) * item.quantity, 0)
+  const autoTip = Math.min(20, dispatch.cart.reduce((n, i) => n + i.quantity, 0))
+  const tip = dispatch.tip ?? autoTip
 
   return (
     <>
@@ -1408,6 +1411,37 @@ function CartPanel({
             onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
             onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
           />
+          {dispatch.cart.length > 0 && (
+            <div className="rounded-2xl px-4 py-3" style={{ backgroundColor: IC.cream, border: `1px solid #E5DDD0` }}>
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wider" style={{ color: IC.green }}>Shopper Tip</p>
+                  <p className="text-[10px]" style={{ color: IC.textMuted }}>Auto: ${autoTip.toFixed(2)} · edit if needed</p>
+                </div>
+                <span className="text-xl font-black" style={{ color: IC.gold }}>${tip.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => onSetTip(Math.max(0, tip - 1))}
+                  className="w-9 h-9 rounded-full bg-white flex items-center justify-center font-bold text-lg active:scale-90 transition-all duration-100"
+                  style={{ border: '1px solid #E5DDD0', color: IC.green }}>−</button>
+                <div className="flex-1 relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-sm" style={{ color: IC.textMuted }}>$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    value={tip}
+                    onChange={e => onSetTip(Math.max(0, Math.min(99, Number(e.target.value) || 0)))}
+                    className="w-full text-center font-black text-base rounded-xl py-2 focus:outline-none bg-white"
+                    style={{ border: `1px solid #E5DDD0`, color: IC.green }}
+                  />
+                </div>
+                <button onClick={() => onSetTip(Math.min(99, tip + 1))}
+                  className="w-9 h-9 rounded-full text-white flex items-center justify-center font-bold text-lg active:scale-90 transition-all duration-100"
+                  style={{ backgroundColor: IC.green }}>+</button>
+              </div>
+            </div>
+          )}
           <button
             onClick={onSendDispatch}
             disabled={dispatch.cart.length === 0}
@@ -1837,6 +1871,10 @@ export default function ShoppingApp() {
     updateActiveDispatch(d => ({ ...d, note }))
   }, [updateActiveDispatch])
 
+  const setDispatchTip = useCallback((tip: number) => {
+    updateActiveDispatch(d => ({ ...d, tip }))
+  }, [updateActiveDispatch])
+
   const toggleFavorite = useCallback((product: KrogerProduct) => {
     const fav: HistoryItem = {
       productId: product.productId,
@@ -1874,6 +1912,29 @@ export default function ShoppingApp() {
       setFavorites(favs)
     })
     return unsub
+  }, [familyId])
+
+  // Sync purchase history with Firestore when family is set
+  useEffect(() => {
+    if (!familyId) return
+    const unsub = onSnapshot(collection(db, 'families', familyId, 'purchaseHistory'), snap => {
+      const items = snap.docs.map(d => d.data() as HistoryItem)
+        .sort((a, b) => a.description.localeCompare(b.description))
+      setPurchaseHistory(items)
+    })
+    return unsub
+  }, [familyId])
+
+  const removeFromHistory = useCallback((productId: string) => {
+    if (familyId) {
+      deleteDoc(doc(db, 'families', familyId, 'purchaseHistory', productId)).catch(() => {})
+    } else {
+      setPurchaseHistory(prev => {
+        const next = prev.filter(h => h.productId !== productId)
+        saveHistory(next)
+        return next
+      })
+    }
   }, [familyId])
 
   // Load family members from Firestore in real time
@@ -1944,6 +2005,7 @@ export default function ShoppingApp() {
         checkedItems: [],
         confirmedQtys: {},
         ...(familyId ? { familyId } : {}),
+        ...(activeDispatch.tip !== undefined ? { tip: activeDispatch.tip } : { tip: Math.min(20, activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)) }),
       }
 
       if (activeDispatch.firestoreId) {
@@ -1956,6 +2018,7 @@ export default function ShoppingApp() {
           shopperName: shopper.name,
           status: 'pending',
           ...(familyId ? { familyId } : {}),
+          tip: activeDispatch.tip ?? Math.min(20, activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)),
         })
       } else {
         await setDoc(doc(db, 'dispatches', firestoreId), liveDispatchData)
@@ -2236,11 +2299,38 @@ export default function ShoppingApp() {
             )}
 
             {activeTab === 'recent' && (
-              <div className="flex flex-col items-center justify-center py-24 text-center">
-                <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
-                <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>Coming Soon</p>
-                <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Your recent purchases will appear here</p>
-              </div>
+              purchaseHistory.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-24 text-center">
+                  <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
+                  <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No Recent Purchases</p>
+                  <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Items will appear here after a shopper checks out</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                  {purchaseHistory.map(item => (
+                    <div key={item.productId} className="relative">
+                      <ProductCard
+                        product={historyItemToProduct(item)}
+                        cartItem={activeDispatch.cart.find(i => i.product.productId === item.productId)}
+                        isFavorite={favorites.some(f => f.productId === item.productId)}
+                        onAdd={addToCart}
+                        onUpdateQty={updateQty}
+                        onToggleFavorite={toggleFavorite}
+                      />
+                      <button
+                        onClick={() => removeFromHistory(item.productId)}
+                        className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full flex items-center justify-center z-10 active:scale-90 transition-all duration-100"
+                        style={{ backgroundColor: '#FEE2E2' }}
+                        aria-label="Remove from history"
+                      >
+                        <svg className="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </>
         )}
@@ -2308,6 +2398,7 @@ export default function ShoppingApp() {
           onSendDispatch={() => { setCartOpen(false); setShopperPickerOpen(true) }}
           onAddReplacement={(id) => setReplacingForId(id)}
           onRemoveReplacement={removeReplacement}
+          onSetTip={setDispatchTip}
           liveCheckedItems={liveProgress[activeDispatchId]?.checkedItems}
         />
       )}
