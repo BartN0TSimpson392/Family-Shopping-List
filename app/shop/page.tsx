@@ -183,6 +183,7 @@ function DispatchDetailScreen({
   const [qtyItem, setQtyItem] = useState<SharedItem | null>(null)
   const [qtyValue, setQtyValue] = useState(1)
   const [detailItem, setDetailItem] = useState<SharedItem | null>(null)
+  const [showDoneModal, setShowDoneModal] = useState(false)
 
   const total = dispatch.items.reduce((n, i) => n + i.qty, 0)
   const checkedCount = dispatch.checkedItems.length
@@ -256,7 +257,7 @@ function DispatchDetailScreen({
         </div>
       )}
 
-      <main className="max-w-2xl mx-auto px-4 pt-4 pb-20 space-y-6">
+      <main className="max-w-2xl mx-auto px-4 pt-4 pb-32 space-y-6">
         {Array.from(groups.entries()).map(([aisle, items]) => {
           const aisleChecked = items.filter(i => dispatch.checkedItems.includes(i.id)).length
           const aisleDone = aisleChecked === items.length
@@ -419,23 +420,48 @@ function DispatchDetailScreen({
 
       </main>
 
-      {allDone && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6" style={{ backgroundColor: `${IC.green}F0` }}>
-          <RadarLogoWhite className="w-20 h-20 mb-6" />
-          <p className="font-black text-white text-3xl uppercase tracking-widest text-center mb-2">Mission Complete</p>
-          <p className="text-sm font-medium text-center mb-2" style={{ color: IC.gold }}>Every item has been collected.</p>
-          <p className="text-sm text-white opacity-60 text-center mb-10">{checkedCount} item{checkedCount !== 1 ? 's' : ''} · {dispatch.store}</p>
-          <div className="w-full max-w-sm space-y-3">
-            <button
-              onClick={onCheckout}
-              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
-              style={{ backgroundColor: IC.gold, color: IC.green }}
-            >Checkout & Save to History →</button>
-            <button
-              onClick={onBack}
-              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
-              style={{ border: '2px solid rgba(255,255,255,0.3)' }}
-            >Back to Dispatches</button>
+      <div className="fixed bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-3 max-w-2xl mx-auto">
+        <button
+          onClick={() => setShowDoneModal(true)}
+          className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] shadow-lg"
+          style={{ backgroundColor: allDone ? IC.gold : IC.green, color: allDone ? IC.green : 'white' }}
+        >
+          {allDone ? '✓ All Items Found — I\'m Done' : `I'm Done Shopping (${checkedCount}/${total})`}
+        </button>
+      </div>
+
+      {showDoneModal && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowDoneModal(false)} />
+          <div className="relative bg-white rounded-t-3xl shadow-2xl px-6 pt-5 pb-10">
+            <div className="flex justify-center mb-5">
+              <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
+            </div>
+            <div className="text-center mb-6">
+              <p className="font-black text-xl uppercase tracking-widest mb-1" style={{ color: IC.green }}>
+                {allDone ? 'Mission Complete!' : 'Done Shopping?'}
+              </p>
+              <p className="text-sm" style={{ color: IC.textMuted }}>
+                {checkedCount} of {total} item{total !== 1 ? 's' : ''} collected · {dispatch.store}
+              </p>
+              {!allDone && (
+                <p className="text-xs mt-2 font-semibold" style={{ color: IC.gold }}>
+                  {total - checkedCount} item{total - checkedCount !== 1 ? 's' : ''} still unchecked
+                </p>
+              )}
+            </div>
+            <div className="space-y-3">
+              <button
+                onClick={onCheckout}
+                className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+                style={{ backgroundColor: IC.green, color: 'white' }}
+              >Checkout & Save to History →</button>
+              <button
+                onClick={() => setShowDoneModal(false)}
+                className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+                style={{ backgroundColor: IC.cream, color: IC.green }}
+              >Back to Dispatch</button>
+            </div>
           </div>
         </div>
       )}
