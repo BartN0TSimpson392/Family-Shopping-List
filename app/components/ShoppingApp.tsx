@@ -1268,6 +1268,9 @@ export default function ShoppingApp() {
       ))
       setShopperPickerOpen(false)
       setCartOpen(false)
+      setShoppingActive(false)
+      setSearchQuery('')
+      setProducts([])
     } finally {
       setSendingShopper(false)
     }
@@ -1371,6 +1374,7 @@ export default function ShoppingApp() {
               {dispatches.map(d => {
                 const isActive = d.id === activeDispatchId
                 const count = d.cart.reduce((n, i) => n + i.quantity, 0)
+                const progress = d.firestoreId ? liveProgress[d.id] : null
                 return (
                   <button
                     key={d.id}
@@ -1383,7 +1387,14 @@ export default function ShoppingApp() {
                     }}
                   >
                     {d.name}
-                    {count > 0 && (
+                    {progress ? (
+                      <span
+                        className="text-xs font-black rounded-full px-1.5 h-5 flex items-center justify-center flex-shrink-0 gap-0.5"
+                        style={{ backgroundColor: isActive ? IC.gold : '#C8BFB0', color: 'white' }}
+                      >
+                        {progress.checked}/{progress.total}
+                      </span>
+                    ) : count > 0 && (
                       <span
                         className="text-xs font-black rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0"
                         style={{ backgroundColor: isActive ? IC.gold : '#C8BFB0', color: 'white' }}
