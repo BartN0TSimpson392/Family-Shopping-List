@@ -614,22 +614,25 @@ function AdminPanel({ familyId, members, currentMemberId, onClose }: {
 function HomeScreen({
   store, dispatches, activeDispatchId, shoppers, liveProgress,
   memberName, memberRoles, isAdmin,
-  onChangeStore, onOpenDispatch, onAddDispatch, onManageFamily, onLogout,
+  onChangeStore, onOpenDispatch, onAddDispatch, onDeleteDispatch, onManageFamily, onLogout,
 }: {
   store: KrogerLocation
   dispatches: Dispatch[]
   activeDispatchId: string
   shoppers: Shopper[]
-  liveProgress: Record<string, { checked: number; total: number }>
+  liveProgress: Record<string, { checked: number; total: number; checkedItems: string[] }>
   memberName: string
   memberRoles: MemberRole[]
   isAdmin: boolean
   onChangeStore: () => void
   onOpenDispatch: (id: string) => void
   onAddDispatch: () => void
+  onDeleteDispatch: (id: string) => void
   onManageFamily: () => void
   onLogout: () => void
 }) {
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
       <header className="sticky top-0 z-30 shadow-lg" style={{ backgroundColor: IC.green }}>
@@ -744,11 +747,11 @@ function HomeScreen({
               const isActive = d.id === activeDispatchId
               const progress = d.firestoreId ? liveProgress[d.id] : null
               return (
-                <button
+                <div
                   key={d.id}
-                  onClick={() => onOpenDispatch(d.id)}
-                  className="w-full bg-white rounded-2xl px-5 py-4 flex items-center justify-between text-left transition-all duration-150 active:scale-[0.98] shadow-sm"
+                  className="w-full bg-white rounded-2xl px-5 py-4 flex items-center justify-between text-left transition-all duration-150 shadow-sm cursor-pointer active:scale-[0.98]"
                   style={{ border: isActive ? `2px solid ${IC.gold}` : '1px solid #E5DDD0' }}
+                  onClick={() => { setPendingDeleteId(null); onOpenDispatch(d.id) }}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -781,10 +784,32 @@ function HomeScreen({
                       </p>
                     )}
                   </div>
-                  <svg className="w-5 h-5 flex-shrink-0 ml-3" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
+                  <div className="flex items-center gap-1.5 flex-shrink-0 ml-3">
+                    {dispatches.length > 1 && (
+                      pendingDeleteId === d.id ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onDeleteDispatch(d.id); setPendingDeleteId(null) }}
+                          className="text-xs font-black px-2.5 py-1 rounded-xl active:scale-95 transition-all duration-100"
+                          style={{ backgroundColor: '#FEE2E2', color: '#EF4444' }}
+                        >Delete?</button>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setPendingDeleteId(d.id) }}
+                          className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+                          style={{ backgroundColor: IC.cream }}
+                          aria-label="Delete dispatch"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="#9B8470" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      )
+                    )}
+                    <svg className="w-5 h-5" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </div>
               )
             })}
 
@@ -1176,7 +1201,7 @@ function ReplacementPanel({
 function CartPanel({
   dispatch, canDelete, onRename, onDeleteDispatch,
   onClose, onUpdateQty, onUpdateNote, onRemove, onSendDispatch,
-  onAddReplacement, onRemoveReplacement, onSetNote,
+  onAddReplacement, onRemoveReplacement, onSetNote, liveCheckedItems,
 }: {
   dispatch: Dispatch
   canDelete: boolean
@@ -1190,6 +1215,7 @@ function CartPanel({
   onAddReplacement: (productId: string) => void
   onRemoveReplacement: (productId: string) => void
   onSetNote: (note: string) => void
+  liveCheckedItems?: string[]
 }) {
   const cartTotal = dispatch.cart.reduce((sum, item) => sum + getPrice(item.product) * item.quantity, 0)
 
@@ -1250,14 +1276,20 @@ function CartPanel({
           {dispatch.cart.map((item) => {
             const imgUrl = getProductImage(item.product, 'thumbnail')
             const price = getPrice(item.product)
+            const isCollected = liveCheckedItems?.includes(item.product.productId)
             return (
-              <div key={item.product.productId} className="rounded-2xl p-3" style={{ backgroundColor: IC.cream, border: '1px solid #E5DDD0' }}>
+              <div key={item.product.productId} className="rounded-2xl p-3" style={{ backgroundColor: isCollected ? `${IC.green}08` : IC.cream, border: isCollected ? `1px solid ${IC.green}30` : '1px solid #E5DDD0' }}>
                 <div className="flex gap-3">
                   {imgUrl && (
-                    <img src={imgUrl} alt={item.product.description} loading="lazy" className="w-14 h-14 object-contain flex-shrink-0" />
+                    <img src={imgUrl} alt={item.product.description} loading="lazy" className={`w-14 h-14 object-contain flex-shrink-0${isCollected ? ' opacity-50' : ''}`} />
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold leading-tight truncate" style={{ color: IC.green }}>{item.product.description}</p>
+                    <div className="flex items-start gap-1.5 flex-wrap">
+                      <p className={`text-sm font-bold leading-tight${isCollected ? ' line-through opacity-60' : ''}`} style={{ color: IC.green }}>{item.product.description}</p>
+                      {isCollected && (
+                        <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: `${IC.green}20`, color: IC.green }}>✓ Collected</span>
+                      )}
+                    </div>
                     {price > 0 && (
                       <p className="text-xs font-black mt-0.5" style={{ color: IC.gold }}>${(price * item.quantity).toFixed(2)}</p>
                     )}
@@ -1527,7 +1559,7 @@ export default function ShoppingApp() {
   const [shoppers, setShoppers] = useState<Shopper[]>([])
   const [shopperPickerOpen, setShopperPickerOpen] = useState(false)
   const [sendingShopper, setSendingShopper] = useState(false)
-  const [liveProgress, setLiveProgress] = useState<Record<string, { checked: number; total: number }>>({})
+  const [liveProgress, setLiveProgress] = useState<Record<string, { checked: number; total: number; checkedItems: string[] }>>({})
 
   const [replacingForId, setReplacingForId] = useState<string | null>(null)
   const [purchaseHistory, setPurchaseHistory] = useState<HistoryItem[]>([])
@@ -1793,6 +1825,7 @@ export default function ShoppingApp() {
             [d.id]: {
               checked: data.checkedItems.length,
               total: data.items.reduce((n, i) => n + i.qty, 0),
+              checkedItems: data.checkedItems,
             },
           }))
         }
@@ -1908,6 +1941,7 @@ export default function ShoppingApp() {
           onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
           onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
           onAddDispatch={addDispatch}
+          onDeleteDispatch={deleteDispatch}
           onManageFamily={() => setAdminPanelOpen(true)}
           onLogout={logout}
         />
@@ -2195,6 +2229,7 @@ export default function ShoppingApp() {
           onSendDispatch={() => { setCartOpen(false); setShopperPickerOpen(true) }}
           onAddReplacement={(id) => setReplacingForId(id)}
           onRemoveReplacement={removeReplacement}
+          liveCheckedItems={liveProgress[activeDispatchId]?.checkedItems}
         />
       )}
 
