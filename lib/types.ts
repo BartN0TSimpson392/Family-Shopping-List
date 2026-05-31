@@ -119,6 +119,22 @@ export interface Shopper {
   createdAt: number
 }
 
+export type MemberRole = 'order' | 'shopper' | 'admin'
+
+export interface FamilyMember {
+  id: string
+  name: string
+  roles: MemberRole[]
+  createdAt: number
+}
+
+export interface Family {
+  id: string
+  name: string
+  password: string
+  createdAt: number
+}
+
 export interface LiveDispatch {
   id: string
   name: string
@@ -133,4 +149,5 @@ export interface LiveDispatch {
   status: 'pending' | 'shopping' | 'complete'
   checkedItems: string[]
   confirmedQtys: Record<string, number>
+  familyId?: string
 }

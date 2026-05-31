@@ -1,16 +1,20 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { collection, doc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore'
+import { useRouter } from 'next/navigation'
+import { collection, doc, setDoc, updateDoc, onSnapshot, getDoc, getDocs, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch } from '@/lib/types'
-// SharedList is no longer needed — dispatches go through Firestore
+import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch, FamilyMember, MemberRole } from '@/lib/types'
 
 const HISTORY_KEY = 'ic-purchase-history'
 const FAVORITES_KEY = 'ic-favorites'
 const STORE_KEY = 'ic-store'
 const DISPATCHES_KEY = 'ic-dispatches'
 const COUNTER_KEY = 'ic-dispatch-counter'
+const FAMILY_ID_KEY = 'ic-family-id'
+const MEMBER_ID_KEY = 'ic-member-id'
+const MEMBER_NAME_KEY = 'ic-member-name'
+const MEMBER_ROLES_KEY = 'ic-member-roles'
 
 function loadHistory(): HistoryItem[] {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
@@ -145,30 +149,522 @@ function RadarLogoWhite({ className = '' }: { className?: string }) {
   )
 }
 
+// ── FamilyGateScreen ──────────────────────────────────────────────────────────
+
+function FamilyGateScreen({ onJoin, onCreate }: { onJoin: () => void; onCreate: () => void }) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-16" style={{ backgroundColor: IC.green }}>
+      <RadarLogoWhite className="w-24 h-24 mb-6" />
+      <h1 className="text-3xl font-black uppercase tracking-widest text-white mb-1">Inner Circle</h1>
+      <p className="text-sm font-bold tracking-widest uppercase mb-12" style={{ color: IC.gold }}>Private Family Dispatch</p>
+      <div className="w-full max-w-sm space-y-3">
+        <button
+          onClick={onJoin}
+          className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] shadow-lg"
+          style={{ backgroundColor: IC.gold, color: IC.green }}
+        >
+          Join Your Family →
+        </button>
+        <button
+          onClick={onCreate}
+          className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+          style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}
+        >
+          Create a New Family
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── JoinFamilyScreen ──────────────────────────────────────────────────────────
+
+function JoinFamilyScreen({ onBack, onFound }: {
+  onBack: () => void
+  onFound: (familyId: string, members: FamilyMember[]) => void
+}) {
+  const [familyIdInput, setFamilyIdInput] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleJoin = async () => {
+    const fid = familyIdInput.trim().toLowerCase()
+    if (!fid || !password) return
+    setLoading(true)
+    setError('')
+    try {
+      const snap = await getDoc(doc(db, 'families', fid))
+      if (!snap.exists()) { setError('Family not found. Check the ID and try again.'); return }
+      const data = snap.data() as { password: string }
+      if (data.password !== password) { setError('Wrong password. Try again.'); return }
+      const membersSnap = await getDocs(collection(db, 'families', fid, 'members'))
+      const members = membersSnap.docs
+        .map(d => ({ id: d.id, ...d.data() } as FamilyMember))
+        .sort((a, b) => a.name.localeCompare(b.name))
+      onFound(fid, members)
+    } catch {
+      setError('Could not connect. Check your internet and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
+      <div className="px-6 pt-14 pb-10 max-w-sm mx-auto w-full">
+        <button onClick={onBack} className="flex items-center gap-1 mb-8 active:opacity-70" style={{ color: IC.gold }}>
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+          </svg>
+          <span className="text-sm font-black uppercase tracking-widest">Back</span>
+        </button>
+        <h2 className="text-2xl font-black uppercase tracking-widest mb-1" style={{ color: IC.green }}>Join Your Family</h2>
+        <p className="text-sm mb-8" style={{ color: IC.textMuted }}>Enter your family ID and password.</p>
+        <div className="space-y-3">
+          <input
+            type="text"
+            value={familyIdInput}
+            onChange={e => setFamilyIdInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+            placeholder="Family ID (e.g. wardzinskis)"
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="w-full rounded-2xl px-4 py-3.5 text-base focus:outline-none bg-white font-mono"
+            style={{ border: '2px solid #E5DDD0', color: IC.green }}
+            onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+            onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="Family password"
+            className="w-full rounded-2xl px-4 py-3.5 text-base focus:outline-none bg-white"
+            style={{ border: '2px solid #E5DDD0', color: IC.green }}
+            onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+            onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            onKeyDown={e => e.key === 'Enter' && handleJoin()}
+          />
+          {error && <p className="text-sm font-medium" style={{ color: '#e53935' }}>{error}</p>}
+          <button
+            onClick={handleJoin}
+            disabled={!familyIdInput.trim() || !password || loading}
+            className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
+            style={{ backgroundColor: IC.green }}
+          >
+            {loading
+              ? <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              : 'Join Family →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── CreateFamilyScreen ────────────────────────────────────────────────────────
+
+function CreateFamilyScreen({ onBack, onCreated }: {
+  onBack: () => void
+  onCreated: (familyId: string, member: FamilyMember) => void
+}) {
+  const [familyName, setFamilyName] = useState('')
+  const [familyId, setFamilyId] = useState('')
+  const [password, setPassword] = useState('')
+  const [adminName, setAdminName] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20)
+
+  const handleCreate = async () => {
+    const fid = familyId.trim()
+    if (!fid || !familyName.trim() || !password || !adminName.trim()) return
+    if (fid.length < 3) { setError('Family ID must be at least 3 characters.'); return }
+    setLoading(true)
+    setError('')
+    try {
+      const existing = await getDoc(doc(db, 'families', fid))
+      if (existing.exists()) { setError('That Family ID is already taken. Try another.'); return }
+      await setDoc(doc(db, 'families', fid), { id: fid, name: familyName.trim(), password, createdAt: Date.now() })
+      const mid = `member-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const member: FamilyMember = { id: mid, name: adminName.trim(), roles: ['admin', 'order'], createdAt: Date.now() }
+      await setDoc(doc(db, 'families', fid, 'members', mid), member)
+      onCreated(fid, member)
+    } catch {
+      setError('Could not create family. Check your connection and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
+      <div className="px-6 pt-14 pb-10 max-w-sm mx-auto w-full">
+        <button onClick={onBack} className="flex items-center gap-1 mb-8 active:opacity-70" style={{ color: IC.gold }}>
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+          </svg>
+          <span className="text-sm font-black uppercase tracking-widest">Back</span>
+        </button>
+        <h2 className="text-2xl font-black uppercase tracking-widest mb-1" style={{ color: IC.green }}>Create Your Family</h2>
+        <p className="text-sm mb-8" style={{ color: IC.textMuted }}>
+          You'll be the admin. Share the Family ID and password so members can join.
+        </p>
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Family Name</label>
+            <input
+              type="text"
+              value={familyName}
+              onChange={e => { setFamilyName(e.target.value); setFamilyId(sanitize(e.target.value)) }}
+              placeholder="e.g. The Wardzinskis"
+              className="w-full rounded-2xl px-4 py-3.5 text-base focus:outline-none bg-white"
+              style={{ border: '2px solid #E5DDD0', color: IC.green }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+              onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>
+              Family ID <span className="normal-case font-normal">(share this so members can join)</span>
+            </label>
+            <input
+              type="text"
+              value={familyId}
+              onChange={e => setFamilyId(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20))}
+              placeholder="e.g. wardzinskis"
+              autoCapitalize="none"
+              autoCorrect="off"
+              className="w-full rounded-2xl px-4 py-3.5 text-base focus:outline-none bg-white font-mono"
+              style={{ border: '2px solid #E5DDD0', color: IC.green }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+              onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Password</label>
+            <input
+              type="text"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="e.g. 123"
+              className="w-full rounded-2xl px-4 py-3.5 text-base focus:outline-none bg-white"
+              style={{ border: '2px solid #E5DDD0', color: IC.green }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+              onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Your Name</label>
+            <input
+              type="text"
+              value={adminName}
+              onChange={e => setAdminName(e.target.value)}
+              placeholder="Your name"
+              className="w-full rounded-2xl px-4 py-3.5 text-base focus:outline-none bg-white"
+              style={{ border: '2px solid #E5DDD0', color: IC.green }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+              onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            />
+          </div>
+          {error && <p className="text-sm font-medium" style={{ color: '#e53935' }}>{error}</p>}
+          <button
+            onClick={handleCreate}
+            disabled={!familyName.trim() || familyId.length < 3 || !password || !adminName.trim() || loading}
+            className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
+            style={{ backgroundColor: IC.green }}
+          >
+            {loading
+              ? <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              : 'Create Family →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── SelectMemberScreen ────────────────────────────────────────────────────────
+
+function SelectMemberScreen({ members, onSelect, onBack }: {
+  members: FamilyMember[]
+  onSelect: (m: FamilyMember) => void
+  onBack: () => void
+}) {
+  const roleLabel: Record<MemberRole, string> = { order: 'Order', shopper: 'Shop', admin: 'Admin' }
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-16" style={{ backgroundColor: IC.green }}>
+      <RadarLogoWhite className="w-20 h-20 mb-6 opacity-80" />
+      <h1 className="text-2xl font-black uppercase tracking-widest text-white mb-1">Inner Circle</h1>
+      <p className="text-sm font-bold tracking-widest uppercase mb-10" style={{ color: IC.gold }}>Who are you?</p>
+
+      {members.length === 0 ? (
+        <p className="text-white opacity-60 text-sm">No members yet — the admin needs to add members first.</p>
+      ) : (
+        <div className="w-full max-w-sm space-y-3">
+          {members.map(m => (
+            <button
+              key={m.id}
+              onClick={() => onSelect(m)}
+              className="w-full flex items-center gap-4 rounded-2xl px-5 py-4 text-left transition-all duration-150 active:scale-[0.98]"
+              style={{ backgroundColor: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.15)' }}
+            >
+              <span className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-black flex-shrink-0"
+                style={{ backgroundColor: IC.gold, color: IC.green }}>
+                {m.name[0].toUpperCase()}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-white text-base">{m.name}</p>
+                <div className="flex gap-1 mt-0.5 flex-wrap">
+                  {m.roles.map(r => (
+                    <span key={r} className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+                      style={{ backgroundColor: `${IC.gold}30`, color: IC.gold }}>
+                      {roleLabel[r]}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <button onClick={onBack} className="mt-10 text-sm font-bold active:opacity-70" style={{ color: IC.gold }}>
+        ← Back
+      </button>
+    </div>
+  )
+}
+
+// ── AdminPanel ────────────────────────────────────────────────────────────────
+
+function AdminPanel({ familyId, members, currentMemberId, onClose }: {
+  familyId: string
+  members: FamilyMember[]
+  currentMemberId: string
+  onClose: () => void
+}) {
+  const [addName, setAddName] = useState('')
+  const [addRoles, setAddRoles] = useState<MemberRole[]>(['shopper'])
+  const [addSaving, setAddSaving] = useState(false)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  const allRoles: { role: MemberRole; label: string }[] = [
+    { role: 'order', label: 'Order' },
+    { role: 'shopper', label: 'Shop' },
+    { role: 'admin', label: 'Admin' },
+  ]
+
+  const toggleAddRole = (role: MemberRole) =>
+    setAddRoles(prev => prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role])
+
+  const handleAddMember = async () => {
+    if (!addName.trim() || addRoles.length === 0 || addSaving) return
+    setAddSaving(true)
+    try {
+      const mid = `member-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      const member: FamilyMember = { id: mid, name: addName.trim(), roles: addRoles, createdAt: Date.now() }
+      await setDoc(doc(db, 'families', familyId, 'members', mid), member)
+      setAddName('')
+      setAddRoles(['shopper'])
+    } finally {
+      setAddSaving(false)
+    }
+  }
+
+  const toggleMemberRole = async (member: FamilyMember, role: MemberRole) => {
+    const newRoles = member.roles.includes(role)
+      ? member.roles.filter(r => r !== role)
+      : [...member.roles, role]
+    if (newRoles.length === 0) return
+    await updateDoc(doc(db, 'families', familyId, 'members', member.id), { roles: newRoles })
+  }
+
+  const removeMember = async (member: FamilyMember) => {
+    if (member.id === currentMemberId) return
+    await deleteDoc(doc(db, 'families', familyId, 'members', member.id))
+    setExpandedId(null)
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] flex flex-col justify-end sm:items-center sm:justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[88vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-5 flex-shrink-0" style={{ borderBottom: '1px solid #E5DDD0' }}>
+          <div>
+            <h3 className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>Family Members</h3>
+            <p className="text-xs font-medium" style={{ color: IC.textMuted }}>Manage roles and access</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90"
+            style={{ backgroundColor: IC.cream }}>
+            <svg className="w-4 h-4" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <div className="px-5 py-4 space-y-2">
+            {members.map(m => (
+              <div key={m.id} className="rounded-2xl overflow-hidden" style={{ border: '1px solid #E5DDD0' }}>
+                <button
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left"
+                  onClick={() => setExpandedId(expandedId === m.id ? null : m.id)}
+                >
+                  <span className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-black text-white flex-shrink-0"
+                    style={{ backgroundColor: m.id === currentMemberId ? IC.gold : IC.green }}>
+                    {m.name[0].toUpperCase()}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-sm" style={{ color: IC.green }}>
+                      {m.name}
+                      {m.id === currentMemberId && (
+                        <span className="text-[9px] font-black uppercase ml-1.5" style={{ color: IC.gold }}>YOU</span>
+                      )}
+                    </p>
+                    <div className="flex gap-1 mt-0.5 flex-wrap">
+                      {m.roles.map(r => (
+                        <span key={r} className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+                          style={{ backgroundColor: `${IC.green}15`, color: IC.green }}>{r}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <svg className={`w-4 h-4 flex-shrink-0 transition-transform duration-200 ${expandedId === m.id ? 'rotate-180' : ''}`}
+                    fill="none" stroke={IC.textMuted} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {expandedId === m.id && (
+                  <div className="px-4 pb-4 pt-2" style={{ borderTop: '1px solid #F5F0E8' }}>
+                    <p className="text-[10px] font-black uppercase tracking-[0.25em] mb-2" style={{ color: IC.textMuted }}>Roles</p>
+                    <div className="flex gap-2 mb-3 flex-wrap">
+                      {allRoles.map(({ role, label }) => (
+                        <button
+                          key={role}
+                          onClick={() => toggleMemberRole(m, role)}
+                          className="px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider transition-all duration-150 active:scale-95"
+                          style={{
+                            backgroundColor: m.roles.includes(role) ? IC.green : '#E5DDD0',
+                            color: m.roles.includes(role) ? 'white' : IC.textMuted,
+                          }}
+                        >{label}</button>
+                      ))}
+                    </div>
+                    {m.id !== currentMemberId && (
+                      <button onClick={() => removeMember(m)}
+                        className="text-xs font-bold active:scale-95 transition-all duration-100" style={{ color: '#e53935' }}>
+                        Remove member
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="px-5 pb-6 pt-2" style={{ borderTop: '1px solid #E5DDD0' }}>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-3" style={{ color: IC.textMuted }}>Add Member</p>
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={addName}
+                onChange={e => setAddName(e.target.value)}
+                placeholder="Member's name…"
+                className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none bg-white"
+                style={{ border: '2px solid #E5DDD0', color: IC.green }}
+                onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+                onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+              />
+              <div className="flex gap-2 flex-wrap">
+                {allRoles.map(({ role, label }) => (
+                  <button
+                    key={role}
+                    onClick={() => toggleAddRole(role)}
+                    className="px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider transition-all duration-150 active:scale-95"
+                    style={{
+                      backgroundColor: addRoles.includes(role) ? IC.green : '#E5DDD0',
+                      color: addRoles.includes(role) ? 'white' : IC.textMuted,
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
+              <button
+                onClick={handleAddMember}
+                disabled={!addName.trim() || addRoles.length === 0 || addSaving}
+                className="w-full py-3 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
+                style={{ backgroundColor: IC.green }}
+              >
+                {addSaving ? 'Adding…' : '+ Add Member'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── HomeScreen ────────────────────────────────────────────────────────────────
 
 function HomeScreen({
   store, dispatches, activeDispatchId, shoppers, liveProgress,
-  onChangeStore, onOpenDispatch, onAddDispatch, onAddShopper,
+  memberName, memberRoles, isAdmin,
+  onChangeStore, onOpenDispatch, onAddDispatch, onManageFamily, onLogout,
 }: {
   store: KrogerLocation
   dispatches: Dispatch[]
   activeDispatchId: string
   shoppers: Shopper[]
   liveProgress: Record<string, { checked: number; total: number }>
+  memberName: string
+  memberRoles: MemberRole[]
+  isAdmin: boolean
   onChangeStore: () => void
   onOpenDispatch: (id: string) => void
   onAddDispatch: () => void
-  onAddShopper: () => void
+  onManageFamily: () => void
+  onLogout: () => void
 }) {
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
       <header className="sticky top-0 z-30 shadow-lg" style={{ backgroundColor: IC.green }}>
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-2.5">
-          <RadarLogoWhite className="w-7 h-7" />
-          <div>
-            <span className="font-black text-white tracking-[0.12em] uppercase text-base leading-none block">Inner Circle</span>
-            <span className="text-[9px] font-bold tracking-[0.3em] uppercase leading-none block" style={{ color: IC.gold }}>Private Dispatch</span>
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <RadarLogoWhite className="w-7 h-7" />
+            <div>
+              <span className="font-black text-white tracking-[0.12em] uppercase text-base leading-none block">Inner Circle</span>
+              <span className="text-[9px] font-bold tracking-[0.3em] uppercase leading-none block" style={{ color: IC.gold }}>Private Dispatch</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <button
+                onClick={onManageFamily}
+                className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+                style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}
+                aria-label="Manage family"
+              >
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+              </button>
+            )}
+            <button
+              onClick={onLogout}
+              className="flex items-center gap-1.5 rounded-full px-3 py-1.5 active:scale-95 transition-all duration-100"
+              style={{ backgroundColor: 'rgba(255,255,255,0.12)' }}
+            >
+              <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0"
+                style={{ backgroundColor: IC.gold, color: IC.green }}>
+                {memberName[0].toUpperCase()}
+              </span>
+              <span className="text-xs font-bold text-white">{memberName}</span>
+            </button>
           </div>
         </div>
       </header>
@@ -195,24 +691,24 @@ function HomeScreen({
         {/* Shoppers */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>Your Shoppers</p>
-            <button
-              onClick={onAddShopper}
-              className="text-xs font-bold active:scale-95 transition-all duration-100"
-              style={{ color: IC.gold }}
-            >+ Add Shopper</button>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>Shoppers</p>
+            {isAdmin && (
+              <button
+                onClick={onManageFamily}
+                className="text-xs font-bold active:scale-95 transition-all duration-100"
+                style={{ color: IC.gold }}
+              >Manage</button>
+            )}
           </div>
           {shoppers.length === 0 ? (
-            <button
-              onClick={onAddShopper}
-              className="w-full rounded-2xl px-5 py-4 flex items-center gap-2 transition-all duration-150 active:scale-[0.98]"
-              style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
+            <div
+              className="w-full rounded-2xl px-5 py-4 text-center"
+              style={{ border: `1.5px dashed ${IC.gold}40` }}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-              </svg>
-              <span className="font-bold text-sm">Add your first shopper</span>
-            </button>
+              <p className="text-sm font-medium" style={{ color: IC.textMuted }}>
+                {isAdmin ? 'Add shoppers via Manage →' : 'No shoppers set up yet.'}
+              </p>
+            </div>
           ) : (
             <div className="flex flex-wrap gap-2">
               {shoppers.map(s => (
@@ -227,11 +723,13 @@ function HomeScreen({
                   {s.name}
                 </div>
               ))}
-              <button
-                onClick={onAddShopper}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold transition-all duration-150 active:scale-95"
-                style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
-              >+ Add</button>
+              {isAdmin && (
+                <button
+                  onClick={onManageFamily}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold transition-all duration-150 active:scale-95"
+                  style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
+                >+ Add</button>
+              )}
             </div>
           )}
         </div>
@@ -995,6 +1493,19 @@ function AddShopperModal({ onAdd, onClose }: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ShoppingApp() {
+  const router = useRouter()
+
+  // ── Family auth state ────────────────────────────────────────────────────────
+  type AuthState = 'loading' | 'gate' | 'join' | 'create' | 'select'
+  const [authState, setAuthState] = useState<AuthState | null>('loading')
+  const [familyId, setFamilyId] = useState<string | null>(null)
+  const [memberId, setMemberId] = useState<string | null>(null)
+  const [memberName, setMemberName] = useState<string | null>(null)
+  const [memberRoles, setMemberRoles] = useState<MemberRole[]>([])
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([])
+  const [joinData, setJoinData] = useState<{ familyId: string; members: FamilyMember[] } | null>(null)
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false)
+
   const [store, setStore] = useState<KrogerLocation | null>(null)
   const [shoppingActive, setShoppingActive] = useState(false)
   const [locationResults, setLocationResults] = useState<KrogerLocation[]>([])
@@ -1015,7 +1526,6 @@ export default function ShoppingApp() {
 
   const [shoppers, setShoppers] = useState<Shopper[]>([])
   const [shopperPickerOpen, setShopperPickerOpen] = useState(false)
-  const [addShopperOpen, setAddShopperOpen] = useState(false)
   const [sendingShopper, setSendingShopper] = useState(false)
   const [liveProgress, setLiveProgress] = useState<Record<string, { checked: number; total: number }>>({})
 
@@ -1024,7 +1534,7 @@ export default function ShoppingApp() {
   const [favorites, setFavorites] = useState<HistoryItem[]>([])
   const [activeTab, setActiveTab] = useState<'favorites' | 'recent'>('favorites')
 
-  // Load persisted data on mount
+  // Load persisted data on mount + check family session
   useEffect(() => {
     setPurchaseHistory(loadHistory())
     setFavorites(loadFavorites())
@@ -1036,6 +1546,25 @@ export default function ShoppingApp() {
       setDispatches(savedDispatches)
       setActiveDispatchId(savedDispatches[0].id)
       dispatchCounter.current = savedCounter
+    }
+    // Check family session
+    const fid = localStorage.getItem(FAMILY_ID_KEY)
+    const mid = localStorage.getItem(MEMBER_ID_KEY)
+    const mname = localStorage.getItem(MEMBER_NAME_KEY)
+    const mroles = localStorage.getItem(MEMBER_ROLES_KEY)
+    if (fid && mid && mname && mroles) {
+      try {
+        const roles = JSON.parse(mroles) as MemberRole[]
+        setFamilyId(fid)
+        setMemberId(mid)
+        setMemberName(mname)
+        setMemberRoles(roles)
+        setAuthState(null)
+      } catch {
+        setAuthState('gate')
+      }
+    } else {
+      setAuthState('gate')
     }
   }, [])
 
@@ -1051,6 +1580,58 @@ export default function ShoppingApp() {
     saveHistory(h)
     setPurchaseHistory(h)
   }, [dispatches])
+
+  // ── Auth callbacks ────────────────────────────────────────────────────────────
+
+  const completeAuth = useCallback((fid: string, mid: string, mname: string, mroles: MemberRole[]) => {
+    localStorage.setItem(FAMILY_ID_KEY, fid)
+    localStorage.setItem(MEMBER_ID_KEY, mid)
+    localStorage.setItem(MEMBER_NAME_KEY, mname)
+    localStorage.setItem(MEMBER_ROLES_KEY, JSON.stringify(mroles))
+    setFamilyId(fid)
+    setMemberId(mid)
+    setMemberName(mname)
+    setMemberRoles(mroles)
+    setJoinData(null)
+    setAuthState(null)
+  }, [])
+
+  const logout = useCallback(() => {
+    localStorage.removeItem(FAMILY_ID_KEY)
+    localStorage.removeItem(MEMBER_ID_KEY)
+    localStorage.removeItem(MEMBER_NAME_KEY)
+    localStorage.removeItem(MEMBER_ROLES_KEY)
+    setFamilyId(null)
+    setMemberId(null)
+    setMemberName(null)
+    setMemberRoles([])
+    setFamilyMembers([])
+    setShoppers([])
+    setJoinData(null)
+    setAuthState('gate')
+  }, [])
+
+  const handleJoinFound = useCallback((fid: string, members: FamilyMember[]) => {
+    setJoinData({ familyId: fid, members })
+    setAuthState('select')
+  }, [])
+
+  const handleMemberSelect = useCallback((m: FamilyMember) => {
+    if (!joinData) return
+    completeAuth(joinData.familyId, m.id, m.name, m.roles)
+  }, [completeAuth, joinData])
+
+  const handleFamilyCreated = useCallback((fid: string, member: FamilyMember) => {
+    completeAuth(fid, member.id, member.name, member.roles)
+  }, [completeAuth])
+
+  // Redirect shopper-only members to /shop
+  const isShopperOnly = authState === null && memberRoles.length > 0 &&
+    !memberRoles.includes('order') && !memberRoles.includes('admin')
+
+  useEffect(() => {
+    if (isShopperOnly) router.push('/shop')
+  }, [isShopperOnly, router])
 
   const searchLocations = useCallback(async (zip: string) => {
     if (zip.length < 5) { setLocationError('Please enter a 5-digit zip code.'); return }
@@ -1185,13 +1766,19 @@ export default function ShoppingApp() {
   const activeDispatch = dispatches.find(d => d.id === activeDispatchId) ?? dispatches[0]
   const cartCount = activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)
 
-  // Load shoppers from Firestore in real time
+  // Load family members from Firestore in real time
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'shoppers'), snap => {
-      setShoppers(snap.docs.map(d => d.data() as Shopper).sort((a, b) => a.name.localeCompare(b.name)))
+    if (!familyId) return
+    const unsub = onSnapshot(collection(db, 'families', familyId, 'members'), snap => {
+      const all = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as FamilyMember))
+        .sort((a, b) => a.name.localeCompare(b.name))
+      setFamilyMembers(all)
+      setShoppers(all.filter(m => m.roles.includes('shopper'))
+        .map(m => ({ id: m.id, name: m.name, createdAt: m.createdAt })))
     })
     return unsub
-  }, [])
+  }, [familyId])
 
   // Subscribe to live progress for sent dispatches
   useEffect(() => {
@@ -1245,6 +1832,7 @@ export default function ShoppingApp() {
         status: 'pending',
         checkedItems: [],
         confirmedQtys: {},
+        ...(familyId ? { familyId } : {}),
       }
 
       if (activeDispatch.firestoreId) {
@@ -1256,6 +1844,7 @@ export default function ShoppingApp() {
           shopperId: shopper.id,
           shopperName: shopper.name,
           status: 'pending',
+          ...(familyId ? { familyId } : {}),
         })
       } else {
         await setDoc(doc(db, 'dispatches', firestoreId), liveDispatchData)
@@ -1276,12 +1865,29 @@ export default function ShoppingApp() {
     }
   }, [store, activeDispatch, activeDispatchId, dispatches])
 
-  const addShopper = useCallback(async (name: string) => {
-    const id = `shopper-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    const shopper: Shopper = { id, name, createdAt: Date.now() }
-    await setDoc(doc(db, 'shoppers', id), shopper)
-    setAddShopperOpen(false)
-  }, [])
+
+  // ── Auth screens ──────────────────────────────────────────────────────────────
+  if (authState === 'loading' || isShopperOnly) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: IC.green }}>
+        <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+      </div>
+    )
+  }
+  if (authState === 'gate') {
+    return <FamilyGateScreen onJoin={() => setAuthState('join')} onCreate={() => setAuthState('create')} />
+  }
+  if (authState === 'join') {
+    return <JoinFamilyScreen onBack={() => setAuthState('gate')} onFound={handleJoinFound} />
+  }
+  if (authState === 'create') {
+    return <CreateFamilyScreen onBack={() => setAuthState('gate')} onCreated={handleFamilyCreated} />
+  }
+  if (authState === 'select' && joinData) {
+    return <SelectMemberScreen members={joinData.members} onSelect={handleMemberSelect} onBack={() => setAuthState('join')} />
+  }
+
+  const isAdmin = memberRoles.includes('admin')
 
   if (!store) {
     return <StorePicker locationResults={locationResults} isLoading={locationLoading} error={locationError} onSearch={searchLocations} onSelect={selectStore} />
@@ -1296,13 +1902,22 @@ export default function ShoppingApp() {
           activeDispatchId={activeDispatchId}
           shoppers={shoppers}
           liveProgress={liveProgress}
+          memberName={memberName!}
+          memberRoles={memberRoles}
+          isAdmin={isAdmin}
           onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
           onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
           onAddDispatch={addDispatch}
-          onAddShopper={() => setAddShopperOpen(true)}
+          onManageFamily={() => setAdminPanelOpen(true)}
+          onLogout={logout}
         />
-        {addShopperOpen && (
-          <AddShopperModal onAdd={addShopper} onClose={() => setAddShopperOpen(false)} />
+        {adminPanelOpen && (
+          <AdminPanel
+            familyId={familyId!}
+            members={familyMembers}
+            currentMemberId={memberId!}
+            onClose={() => setAdminPanelOpen(false)}
+          />
         )}
       </>
     )
@@ -1600,13 +2215,18 @@ export default function ShoppingApp() {
           shoppers={shoppers}
           sending={sendingShopper}
           onSend={sendToShopper}
-          onAddShopper={() => { setShopperPickerOpen(false); setAddShopperOpen(true) }}
+          onAddShopper={() => { setShopperPickerOpen(false); setAdminPanelOpen(true) }}
           onClose={() => setShopperPickerOpen(false)}
         />
       )}
 
-      {addShopperOpen && (
-        <AddShopperModal onAdd={addShopper} onClose={() => setAddShopperOpen(false)} />
+      {adminPanelOpen && (
+        <AdminPanel
+          familyId={familyId!}
+          members={familyMembers}
+          currentMemberId={memberId!}
+          onClose={() => setAdminPanelOpen(false)}
+        />
       )}
     </div>
   )

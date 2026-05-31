@@ -2,12 +2,15 @@
 
 import { Suspense } from 'react'
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { collection, doc, onSnapshot, query, where, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import type { LiveDispatch, Shopper } from '@/lib/types'
+import type { LiveDispatch, MemberRole, SharedItem } from '@/lib/types'
 
-const SHOPPER_ID_KEY = 'ic-shopper-id'
-const SHOPPER_NAME_KEY = 'ic-shopper-name'
+const FAMILY_ID_KEY = 'ic-family-id'
+const MEMBER_ID_KEY = 'ic-member-id'
+const MEMBER_NAME_KEY = 'ic-member-name'
+const MEMBER_ROLES_KEY = 'ic-member-roles'
 
 const IC = {
   cream: '#F2EDE0',
@@ -34,53 +37,24 @@ function RadarLogoWhite({ className = '' }: { className?: string }) {
   )
 }
 
-// ── Identity picker ───────────────────────────────────────────────────────────
+// ── No-access screen ──────────────────────────────────────────────────────────
 
-function IdentityScreen({ onSelect }: { onSelect: (s: Shopper) => void }) {
-  const [shoppers, setShoppers] = useState<Shopper[]>([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'shoppers'), snap => {
-      setShoppers(snap.docs.map(d => d.data() as Shopper).sort((a, b) => a.name.localeCompare(b.name)))
-      setLoading(false)
-    })
-    return unsub
-  }, [])
-
+function NoAccessScreen({ onGoHome }: { onGoHome: () => void }) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 py-16" style={{ backgroundColor: IC.green }}>
       <RadarLogoWhite className="w-20 h-20 mb-6 opacity-80" />
-      <h1 className="text-2xl font-black uppercase tracking-widest text-white mb-1">Inner Circle</h1>
-      <p className="text-sm font-bold tracking-widest uppercase mb-10" style={{ color: IC.gold }}>Who are you?</p>
-
-      {loading ? (
-        <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
-      ) : shoppers.length === 0 ? (
-        <div className="text-center">
-          <p className="text-white font-medium text-sm opacity-70">No shoppers have been set up yet.</p>
-          <p className="mt-2 text-sm" style={{ color: IC.gold }}>Ask the order placer to add you first.</p>
-        </div>
-      ) : (
-        <div className="w-full max-w-sm space-y-3">
-          {shoppers.map(s => (
-            <button
-              key={s.id}
-              onClick={() => onSelect(s)}
-              className="w-full flex items-center gap-4 rounded-2xl px-5 py-4 text-left transition-all duration-150 active:scale-[0.98]"
-              style={{ backgroundColor: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.15)' }}
-            >
-              <span className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-black flex-shrink-0" style={{ backgroundColor: IC.gold, color: IC.green }}>
-                {s.name[0].toUpperCase()}
-              </span>
-              <span className="font-bold text-white text-base flex-1">{s.name}</span>
-              <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          ))}
-        </div>
-      )}
+      <h1 className="text-2xl font-black uppercase tracking-widest text-white mb-2">Inner Circle</h1>
+      <p className="text-sm font-bold tracking-widest uppercase mb-10" style={{ color: IC.gold }}>Not logged in</p>
+      <p className="text-white opacity-70 text-sm text-center mb-8">
+        Please open the app and log into your family account first.
+      </p>
+      <button
+        onClick={onGoHome}
+        className="py-4 px-8 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+        style={{ backgroundColor: IC.gold, color: IC.green }}
+      >
+        Go to App →
+      </button>
     </div>
   )
 }
@@ -88,12 +62,13 @@ function IdentityScreen({ onSelect }: { onSelect: (s: Shopper) => void }) {
 // ── Dispatch list ─────────────────────────────────────────────────────────────
 
 function DispatchListScreen({
-  shopperName, dispatches, onOpen, onChangeIdentity,
+  shopperName, dispatches, hasOrderRole, onOpen, onSwitchToOrders,
 }: {
   shopperName: string
   dispatches: LiveDispatch[]
+  hasOrderRole: boolean
   onOpen: (d: LiveDispatch) => void
-  onChangeIdentity: () => void
+  onSwitchToOrders: () => void
 }) {
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
@@ -107,10 +82,10 @@ function DispatchListScreen({
             </div>
           </div>
           <button
-            onClick={onChangeIdentity}
+            onClick={onSwitchToOrders}
             className="text-xs font-bold active:scale-95 transition-all duration-100"
             style={{ color: IC.gold }}
-          >Not {shopperName}?</button>
+          >{hasOrderRole ? '← Orders' : 'Log Out'}</button>
         </div>
       </header>
 
@@ -137,7 +112,7 @@ function DispatchListScreen({
                   key={d.id}
                   onClick={() => onOpen(d)}
                   className="w-full bg-white rounded-2xl px-5 py-4 text-left transition-all duration-150 active:scale-[0.98] shadow-sm"
-                  style={{ border: `1px solid #E5DDD0` }}
+                  style={{ border: '1px solid #E5DDD0' }}
                 >
                   <div className="flex items-start justify-between gap-3 mb-3">
                     <div className="min-w-0 flex-1">
@@ -170,9 +145,7 @@ function DispatchListScreen({
   )
 }
 
-// ── Dispatch detail (shopping view) ──────────────────────────────────────────
-
-import type { SharedItem } from '@/lib/types'
+// ── Dispatch detail ───────────────────────────────────────────────────────────
 
 function groupByAisle(items: SharedItem[]): Map<string, SharedItem[]> {
   const groups = new Map<string, SharedItem[]>()
@@ -181,9 +154,7 @@ function groupByAisle(items: SharedItem[]): Map<string, SharedItem[]> {
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key)!.push(item)
   }
-  for (const g of groups.values()) {
-    g.sort((a, b) => (a.seq || 0) - (b.seq || 0))
-  }
+  for (const g of groups.values()) g.sort((a, b) => (a.seq || 0) - (b.seq || 0))
   return new Map(
     Array.from(groups.entries()).sort(([ak, ai], [bk, bi]) => {
       if (ak === 'Other') return 1
@@ -256,12 +227,9 @@ function DispatchDetailScreen({
               <p className="text-xs font-semibold" style={{ color: IC.gold }}>of {total}</p>
             </div>
           </div>
-
           <div className="mt-4 h-2 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}>
-            <div
-              className="h-full rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${progress}%`, backgroundColor: IC.gold }}
-            />
+            <div className="h-full rounded-full transition-all duration-500 ease-out"
+              style={{ width: `${progress}%`, backgroundColor: IC.gold }} />
           </div>
           <div className="flex justify-between mt-1.5">
             <p className="text-xs font-medium opacity-60 text-white">{Math.round(progress)}% complete</p>
@@ -313,7 +281,7 @@ function DispatchDetailScreen({
                         className="w-full text-left rounded-2xl transition-all duration-200 active:scale-[0.98]"
                         style={{
                           backgroundColor: isDone ? '#EDE8DA' : 'white',
-                          border: isDone ? `2px solid ${IC.gold}50` : `1px solid #E5DDD0`,
+                          border: isDone ? `2px solid ${IC.gold}50` : '1px solid #E5DDD0',
                         }}
                       >
                         <div className="flex items-start gap-3 p-3">
@@ -325,18 +293,17 @@ function DispatchDetailScreen({
                               </svg>
                             )}
                           </div>
-
                           {item.img && (
                             <img src={item.img} alt={item.name} loading="lazy"
                               className="w-14 h-14 object-contain flex-shrink-0 transition-all duration-200"
                               style={{ opacity: isDone ? 0.35 : 1, filter: isDone ? 'grayscale(1)' : 'none' }} />
                           )}
-
                           <div className="flex-1 min-w-0">
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0 flex-1">
                                 {item.brand && (
-                                  <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{ color: isDone ? '#9DB8A8' : IC.textMuted }}>{item.brand}</p>
+                                  <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5"
+                                    style={{ color: isDone ? '#9DB8A8' : IC.textMuted }}>{item.brand}</p>
                                 )}
                                 <p className="text-sm font-bold leading-tight transition-all duration-200"
                                   style={{ color: isDone ? '#9DB8A8' : IC.green, textDecoration: isDone ? 'line-through' : 'none' }}>
@@ -356,14 +323,12 @@ function DispatchDetailScreen({
                                 )}
                               </div>
                             </div>
-
                             {item.note && (
                               <div className="mt-2 text-xs rounded-xl px-3 py-1.5 font-medium"
                                 style={{ backgroundColor: isDone ? '#E5DDD0' : `${IC.gold}15`, color: isDone ? '#9DB8A8' : IC.greenMid }}>
                                 <span className="font-black">Note:</span> {item.note}
                               </div>
                             )}
-
                             {item.sub && (
                               <div className="mt-2 rounded-xl px-3 py-2 flex items-center gap-2 transition-all duration-200"
                                 style={{ backgroundColor: isDone ? '#E5DDD0' : 'white', border: isDone ? 'none' : `1px solid ${IC.gold}40` }}>
@@ -431,61 +396,66 @@ function DispatchDetailScreen({
 
 // ── Main shop component ───────────────────────────────────────────────────────
 
-type Screen = 'loading' | 'identity' | 'dispatches' | 'detail'
+type Screen = 'loading' | 'dispatches' | 'detail' | 'noaccess'
 
 function ShopContent() {
+  const router = useRouter()
   const [screen, setScreen] = useState<Screen>('loading')
-  const [shopperId, setShopperId] = useState<string | null>(null)
-  const [shopperName, setShopperName] = useState<string | null>(null)
+  const [memberId, setMemberId] = useState<string | null>(null)
+  const [memberName, setMemberName] = useState<string | null>(null)
+  const [memberRoles, setMemberRoles] = useState<MemberRole[]>([])
   const [dispatches, setDispatches] = useState<LiveDispatch[]>([])
   const [activeDispatch, setActiveDispatch] = useState<LiveDispatch | null>(null)
 
-  // Restore identity from localStorage
   useEffect(() => {
-    const id = localStorage.getItem(SHOPPER_ID_KEY)
-    const name = localStorage.getItem(SHOPPER_NAME_KEY)
-    if (id && name) {
-      setShopperId(id)
-      setShopperName(name)
-      setScreen('dispatches')
+    const mid = localStorage.getItem(MEMBER_ID_KEY)
+    const mname = localStorage.getItem(MEMBER_NAME_KEY)
+    const mroles = localStorage.getItem(MEMBER_ROLES_KEY)
+    if (mid && mname && mroles) {
+      try {
+        const roles = JSON.parse(mroles) as MemberRole[]
+        if (!roles.includes('shopper')) {
+          setScreen('noaccess')
+          return
+        }
+        setMemberId(mid)
+        setMemberName(mname)
+        setMemberRoles(roles)
+        setScreen('dispatches')
+      } catch {
+        setScreen('noaccess')
+      }
     } else {
-      setScreen('identity')
+      setScreen('noaccess')
     }
   }, [])
 
-  // Subscribe to dispatches for this shopper
   useEffect(() => {
-    if (!shopperId) return
+    if (!memberId) return
     const q = query(
       collection(db, 'dispatches'),
-      where('shopperId', '==', shopperId),
+      where('shopperId', '==', memberId),
       where('status', 'in', ['pending', 'shopping'])
     )
     const unsub = onSnapshot(q, snap => {
       const docs = snap.docs.map(d => d.data() as LiveDispatch).sort((a, b) => b.createdAt - a.createdAt)
       setDispatches(docs)
-      // Keep active dispatch in sync with Firestore updates
       setActiveDispatch(prev => prev ? (docs.find(d => d.id === prev.id) ?? prev) : prev)
     })
     return unsub
-  }, [shopperId])
+  }, [memberId])
 
-  const selectIdentity = (shopper: Shopper) => {
-    localStorage.setItem(SHOPPER_ID_KEY, shopper.id)
-    localStorage.setItem(SHOPPER_NAME_KEY, shopper.name)
-    setShopperId(shopper.id)
-    setShopperName(shopper.name)
-    setScreen('dispatches')
-  }
-
-  const changeIdentity = () => {
-    localStorage.removeItem(SHOPPER_ID_KEY)
-    localStorage.removeItem(SHOPPER_NAME_KEY)
-    setShopperId(null)
-    setShopperName(null)
-    setDispatches([])
-    setActiveDispatch(null)
-    setScreen('identity')
+  const switchToOrders = () => {
+    if (memberRoles.includes('order') || memberRoles.includes('admin')) {
+      router.push('/')
+    } else {
+      // Logout
+      localStorage.removeItem(FAMILY_ID_KEY)
+      localStorage.removeItem(MEMBER_ID_KEY)
+      localStorage.removeItem(MEMBER_NAME_KEY)
+      localStorage.removeItem(MEMBER_ROLES_KEY)
+      router.push('/')
+    }
   }
 
   const toggleItem = async (itemId: string, checked: boolean) => {
@@ -503,8 +473,7 @@ function ShopContent() {
 
   const confirmQty = async (itemId: string, qty: number) => {
     if (!activeDispatch) return
-    const ref = doc(db, 'dispatches', activeDispatch.id)
-    await updateDoc(ref, { [`confirmedQtys.${itemId}`]: qty })
+    await updateDoc(doc(db, 'dispatches', activeDispatch.id), { [`confirmedQtys.${itemId}`]: qty })
   }
 
   if (screen === 'loading') {
@@ -515,17 +484,18 @@ function ShopContent() {
     )
   }
 
-  if (screen === 'identity') {
-    return <IdentityScreen onSelect={selectIdentity} />
+  if (screen === 'noaccess') {
+    return <NoAccessScreen onGoHome={() => router.push('/')} />
   }
 
   if (screen === 'dispatches') {
     return (
       <DispatchListScreen
-        shopperName={shopperName!}
+        shopperName={memberName!}
         dispatches={dispatches}
+        hasOrderRole={memberRoles.includes('order') || memberRoles.includes('admin')}
         onOpen={d => { setActiveDispatch(d); setScreen('detail') }}
-        onChangeIdentity={changeIdentity}
+        onSwitchToOrders={switchToOrders}
       />
     )
   }
