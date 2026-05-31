@@ -107,4 +107,30 @@ export interface Dispatch {
   name: string
   cart: CartItem[]
   note: string
+  firestoreId?: string
+  shopperId?: string
+  shopperName?: string
+  sentAt?: number
+}
+
+export interface Shopper {
+  id: string
+  name: string
+  createdAt: number
+}
+
+export interface LiveDispatch {
+  id: string
+  name: string
+  store: string
+  addr: string
+  locationId: string
+  items: SharedItem[]
+  note: string
+  shopperId: string
+  shopperName: string
+  createdAt: number
+  status: 'pending' | 'shopping' | 'complete'
+  checkedItems: string[]
+  confirmedQtys: Record<string, number>
 }

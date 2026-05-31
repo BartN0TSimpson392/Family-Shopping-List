@@ -1,7 +1,10 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedList, SharedItem, Dispatch } from '@/lib/types'
+import { collection, doc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore'
+import { db } from '@/lib/firebase'
+import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch } from '@/lib/types'
+// SharedList is no longer needed — dispatches go through Firestore
 
 const HISTORY_KEY = 'ic-purchase-history'
 const FAVORITES_KEY = 'ic-favorites'
@@ -145,14 +148,18 @@ function RadarLogoWhite({ className = '' }: { className?: string }) {
 // ── HomeScreen ────────────────────────────────────────────────────────────────
 
 function HomeScreen({
-  store, dispatches, activeDispatchId, onChangeStore, onOpenDispatch, onAddDispatch,
+  store, dispatches, activeDispatchId, shoppers, liveProgress,
+  onChangeStore, onOpenDispatch, onAddDispatch, onAddShopper,
 }: {
   store: KrogerLocation
   dispatches: Dispatch[]
   activeDispatchId: string
+  shoppers: Shopper[]
+  liveProgress: Record<string, { checked: number; total: number }>
   onChangeStore: () => void
   onOpenDispatch: (id: string) => void
   onAddDispatch: () => void
+  onAddShopper: () => void
 }) {
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
@@ -185,6 +192,50 @@ function HomeScreen({
           </div>
         </div>
 
+        {/* Shoppers */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>Your Shoppers</p>
+            <button
+              onClick={onAddShopper}
+              className="text-xs font-bold active:scale-95 transition-all duration-100"
+              style={{ color: IC.gold }}
+            >+ Add Shopper</button>
+          </div>
+          {shoppers.length === 0 ? (
+            <button
+              onClick={onAddShopper}
+              className="w-full rounded-2xl px-5 py-4 flex items-center gap-2 transition-all duration-150 active:scale-[0.98]"
+              style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+              </svg>
+              <span className="font-bold text-sm">Add your first shopper</span>
+            </button>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {shoppers.map(s => (
+                <div
+                  key={s.id}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold"
+                  style={{ backgroundColor: `${IC.green}15`, color: IC.green }}
+                >
+                  <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-black text-white flex-shrink-0" style={{ backgroundColor: IC.green }}>
+                    {s.name[0].toUpperCase()}
+                  </span>
+                  {s.name}
+                </div>
+              ))}
+              <button
+                onClick={onAddShopper}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold transition-all duration-150 active:scale-95"
+                style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
+              >+ Add</button>
+            </div>
+          )}
+        </div>
+
         {/* Dispatches */}
         <div>
           <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-3" style={{ color: IC.textMuted }}>Your Dispatches</p>
@@ -193,6 +244,7 @@ function HomeScreen({
               const itemCount = d.cart.reduce((n, i) => n + i.quantity, 0)
               const total = d.cart.reduce((sum, i) => sum + getPrice(i.product) * i.quantity, 0)
               const isActive = d.id === activeDispatchId
+              const progress = d.firestoreId ? liveProgress[d.id] : null
               return (
                 <button
                   key={d.id}
@@ -201,12 +253,35 @@ function HomeScreen({
                   style={{ border: isActive ? `2px solid ${IC.gold}` : '1px solid #E5DDD0' }}
                 >
                   <div className="min-w-0 flex-1">
-                    <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
-                    <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
-                      {itemCount === 0
-                        ? 'Empty — tap to start adding items'
-                        : `${itemCount} item${itemCount !== 1 ? 's' : ''}${total > 0 ? ` · $${total.toFixed(2)} est.` : ''}`}
-                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                      {d.shopperName && (
+                        <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${IC.gold}20`, color: IC.gold }}>
+                          → {d.shopperName}
+                        </span>
+                      )}
+                    </div>
+                    {progress ? (
+                      <div className="mt-1.5">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: '#E5DDD0' }}>
+                            <div
+                              className="h-full rounded-full transition-all duration-500"
+                              style={{ width: `${progress.total > 0 ? (progress.checked / progress.total) * 100 : 0}%`, backgroundColor: IC.gold }}
+                            />
+                          </div>
+                          <span className="text-xs font-bold flex-shrink-0" style={{ color: IC.textMuted }}>
+                            {progress.checked}/{progress.total}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
+                        {itemCount === 0
+                          ? 'Empty — tap to start adding items'
+                          : `${itemCount} item${itemCount !== 1 ? 's' : ''}${total > 0 ? ` · $${total.toFixed(2)} est.` : ''}`}
+                      </p>
+                    )}
                   </div>
                   <svg className="w-5 h-5 flex-shrink-0 ml-3" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -602,7 +677,7 @@ function ReplacementPanel({
 
 function CartPanel({
   dispatch, canDelete, onRename, onDeleteDispatch,
-  onClose, onUpdateQty, onUpdateNote, onRemove, onGenerateLink,
+  onClose, onUpdateQty, onUpdateNote, onRemove, onSendDispatch,
   onAddReplacement, onRemoveReplacement, onSetNote,
 }: {
   dispatch: Dispatch
@@ -613,7 +688,7 @@ function CartPanel({
   onUpdateQty: (id: string, qty: number) => void
   onUpdateNote: (id: string, note: string) => void
   onRemove: (id: string) => void
-  onGenerateLink: () => void
+  onSendDispatch: () => void
   onAddReplacement: (productId: string) => void
   onRemoveReplacement: (productId: string) => void
   onSetNote: (note: string) => void
@@ -766,7 +841,7 @@ function CartPanel({
             onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
           />
           <button
-            onClick={onGenerateLink}
+            onClick={onSendDispatch}
             disabled={dispatch.cart.length === 0}
             className="w-full text-white font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] text-sm tracking-widest uppercase disabled:opacity-40"
             style={{ backgroundColor: IC.green }}
@@ -779,10 +854,14 @@ function CartPanel({
   )
 }
 
-// ── ShareModal ────────────────────────────────────────────────────────────────
+// ── ShopperPickerModal ────────────────────────────────────────────────────────
 
-function ShareModal({ url, copied, onCopy, onClose }: {
-  url: string | null; copied: boolean; onCopy: () => void; onClose: () => void
+function ShopperPickerModal({ shoppers, sending, onSend, onAddShopper, onClose }: {
+  shoppers: Shopper[]
+  sending: boolean
+  onSend: (shopper: Shopper) => void
+  onAddShopper: () => void
+  onClose: () => void
 }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4">
@@ -800,48 +879,114 @@ function ShareModal({ url, copied, onCopy, onClose }: {
 
         <div className="text-center mb-6">
           <RadarLogo className="w-16 h-16 mx-auto mb-4" />
-          <h3 className="text-xl font-black uppercase tracking-widest" style={{ color: IC.green }}>Dispatch Ready</h3>
-          <p className="text-sm mt-1" style={{ color: IC.textMuted }}>Share this link with your shopper</p>
+          <h3 className="text-xl font-black uppercase tracking-widest" style={{ color: IC.green }}>Send Dispatch</h3>
+          <p className="text-sm mt-1" style={{ color: IC.textMuted }}>Who is shopping this order?</p>
         </div>
 
-        {!url ? (
-          <div className="flex flex-col items-center py-4">
+        {sending ? (
+          <div className="flex flex-col items-center py-6">
             <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin mb-3" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
-            <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Generating link…</p>
+            <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Sending dispatch…</p>
+          </div>
+        ) : shoppers.length === 0 ? (
+          <div className="text-center py-4">
+            <p className="text-sm mb-4" style={{ color: IC.textMuted }}>No shoppers yet. Add one first.</p>
+            <button
+              onClick={onAddShopper}
+              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97]"
+              style={{ backgroundColor: IC.green }}
+            >+ Add Shopper</button>
           </div>
         ) : (
-          <>
-            <div className="rounded-2xl px-4 py-3 mb-4" style={{ backgroundColor: IC.cream, border: '1px solid #E5DDD0' }}>
-              <input
-                readOnly
-                value={url}
-                className="w-full text-sm bg-transparent focus:outline-none truncate font-mono"
-                style={{ color: IC.textMuted }}
-              />
-            </div>
-
+          <div className="space-y-2">
+            {shoppers.map(s => (
+              <button
+                key={s.id}
+                onClick={() => onSend(s)}
+                className="w-full flex items-center gap-4 bg-white rounded-2xl px-5 py-4 text-left transition-all duration-150 active:scale-[0.98] shadow-sm"
+                style={{ border: `1px solid #E5DDD0` }}
+              >
+                <span className="w-10 h-10 rounded-full flex items-center justify-center text-lg font-black text-white flex-shrink-0" style={{ backgroundColor: IC.green }}>
+                  {s.name[0].toUpperCase()}
+                </span>
+                <span className="font-bold text-base flex-1" style={{ color: IC.green }}>{s.name}</span>
+                <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            ))}
             <button
-              onClick={onCopy}
-              className="w-full py-4 rounded-2xl font-black text-base tracking-widest uppercase transition-all duration-200 active:scale-[0.97] text-white"
-              style={{ backgroundColor: copied ? IC.gold : IC.green }}
+              onClick={onAddShopper}
+              className="w-full rounded-2xl px-5 py-4 flex items-center gap-2 transition-all duration-150 active:scale-[0.98]"
+              style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
             >
-              {copied ? '✓ Copied!' : 'Copy Link'}
-            </button>
-
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-4 flex items-center justify-center gap-1 text-sm font-bold hover:underline active:scale-95 transition-all duration-100 uppercase tracking-wider"
-              style={{ color: IC.gold }}
-            >
-              Preview Shopper View
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
               </svg>
-            </a>
-          </>
+              <span className="font-bold text-sm">Add New Shopper</span>
+            </button>
+          </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ── AddShopperModal ───────────────────────────────────────────────────────────
+
+function AddShopperModal({ onAdd, onClose }: {
+  onAdd: (name: string) => Promise<void>
+  onClose: () => void
+}) {
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    setSaving(true)
+    await onAdd(name.trim())
+    setSaving(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-7">
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+          style={{ backgroundColor: IC.cream }}
+        >
+          <svg className="w-4 h-4" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <h3 className="text-xl font-black uppercase tracking-widest mb-1" style={{ color: IC.green }}>Add Shopper</h3>
+        <p className="text-sm mb-6" style={{ color: IC.textMuted }}>They'll appear on their device automatically.</p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <input
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Shopper's name…"
+            autoFocus
+            className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+            style={{ border: `2px solid #E5DDD0`, color: IC.green }}
+            onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+            onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+          />
+          <button
+            type="submit"
+            disabled={!name.trim() || saving}
+            className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
+            style={{ backgroundColor: IC.green }}
+          >
+            {saving ? 'Saving…' : 'Add Shopper'}
+          </button>
+        </form>
       </div>
     </div>
   )
@@ -868,9 +1013,12 @@ export default function ShoppingApp() {
   const [cartOpen, setCartOpen] = useState(false)
   const dispatchCounter = useRef(2)
 
-  const [shareUrl, setShareUrl] = useState<string | null>(null)
-  const [shareModalOpen, setShareModalOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [shoppers, setShoppers] = useState<Shopper[]>([])
+  const [shopperPickerOpen, setShopperPickerOpen] = useState(false)
+  const [addShopperOpen, setAddShopperOpen] = useState(false)
+  const [sendingShopper, setSendingShopper] = useState(false)
+  const [liveProgress, setLiveProgress] = useState<Record<string, { checked: number; total: number }>>({})
+
   const [replacingForId, setReplacingForId] = useState<string | null>(null)
   const [purchaseHistory, setPurchaseHistory] = useState<HistoryItem[]>([])
   const [favorites, setFavorites] = useState<HistoryItem[]>([])
@@ -1037,55 +1185,100 @@ export default function ShoppingApp() {
   const activeDispatch = dispatches.find(d => d.id === activeDispatchId) ?? dispatches[0]
   const cartCount = activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)
 
-  const generateLink = useCallback(() => {
-    if (!store || activeDispatch.cart.length === 0) return
-    const items: SharedItem[] = activeDispatch.cart.map((ci) => ({
-      id: ci.product.productId, qty: ci.quantity, note: ci.note,
-      name: ci.product.description, brand: ci.product.brand || '',
-      img: getProductImage(ci.product, 'small') || getProductImage(ci.product, 'thumbnail'),
-      size: getSize(ci.product), price: getPrice(ci.product),
-      aisle: ci.product.aisleLocations?.[0]?.description || 'Other',
-      aisleNum: ci.product.aisleLocations?.[0]?.number || '0',
-      seq: parseInt(ci.product.aisleLocations?.[0]?.sequenceNumber || '0', 10),
-      ...(ci.replacement ? { sub: { id: ci.replacement.productId, name: ci.replacement.description, brand: ci.replacement.brand, img: ci.replacement.img, size: ci.replacement.size, price: ci.replacement.price, qty: ci.replacement.quantity, note: ci.replacement.note } } : {}),
-    }))
-    const list: SharedList = {
-      store: store.name,
-      addr: `${store.address.addressLine1}, ${store.address.city}, ${store.address.state}`,
-      items, note: activeDispatch.note,
-    }
-    const listJson = JSON.stringify(list)
-
-    // Open modal immediately in loading state
-    setShareUrl(null)
-    setShareModalOpen(true)
-    setCopied(false)
-
-    // Build fallback URL (encoded in query param) in case the POST fails
-    const buildFallbackUrl = () => {
-      const bytes = new TextEncoder().encode(listJson)
-      let binary = ''
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-      return `${window.location.origin}/shop?list=${btoa(binary)}`
-    }
-
-    fetch('/api/lists', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: listJson,
+  // Load shoppers from Firestore in real time
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'shoppers'), snap => {
+      setShoppers(snap.docs.map(d => d.data() as Shopper).sort((a, b) => a.name.localeCompare(b.name)))
     })
-      .then(r => r.json())
-      .then(data => {
-        if (data.id) setShareUrl(`${window.location.origin}/shop?id=${data.id}`)
-        else setShareUrl(buildFallbackUrl())
-      })
-      .catch(() => setShareUrl(buildFallbackUrl()))
-  }, [store, activeDispatch])
+    return unsub
+  }, [])
 
-  const copyUrl = useCallback(() => {
-    if (!shareUrl) return
-    navigator.clipboard.writeText(shareUrl).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
-  }, [shareUrl])
+  // Subscribe to live progress for sent dispatches
+  useEffect(() => {
+    const sent = dispatches.filter(d => d.firestoreId)
+    if (sent.length === 0) return
+    const unsubs = sent.map(d =>
+      onSnapshot(doc(db, 'dispatches', d.firestoreId!), snap => {
+        const data = snap.data() as LiveDispatch | undefined
+        if (data) {
+          setLiveProgress(prev => ({
+            ...prev,
+            [d.id]: {
+              checked: data.checkedItems.length,
+              total: data.items.reduce((n, i) => n + i.qty, 0),
+            },
+          }))
+        }
+      })
+    )
+    return () => unsubs.forEach(u => u())
+  }, [dispatches])
+
+  const sendToShopper = useCallback(async (shopper: Shopper) => {
+    if (!store || activeDispatch.cart.length === 0) return
+    setSendingShopper(true)
+    try {
+      const items: SharedItem[] = activeDispatch.cart.map((ci) => ({
+        id: ci.product.productId, qty: ci.quantity, note: ci.note,
+        name: ci.product.description, brand: ci.product.brand || '',
+        img: getProductImage(ci.product, 'small') || getProductImage(ci.product, 'thumbnail'),
+        size: getSize(ci.product), price: getPrice(ci.product),
+        aisle: ci.product.aisleLocations?.[0]?.description || 'Other',
+        aisleNum: ci.product.aisleLocations?.[0]?.number || '0',
+        seq: parseInt(ci.product.aisleLocations?.[0]?.sequenceNumber || '0', 10),
+        ...(ci.replacement ? { sub: { id: ci.replacement.productId, name: ci.replacement.description, brand: ci.replacement.brand, img: ci.replacement.img, size: ci.replacement.size, price: ci.replacement.price, qty: ci.replacement.quantity, note: ci.replacement.note } } : {}),
+      }))
+
+      const firestoreId = activeDispatch.firestoreId || `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
+      const liveDispatchData: LiveDispatch = {
+        id: firestoreId,
+        name: activeDispatch.name,
+        store: store.name,
+        addr: `${store.address.addressLine1}, ${store.address.city}, ${store.address.state}`,
+        locationId: store.locationId,
+        items,
+        note: activeDispatch.note,
+        shopperId: shopper.id,
+        shopperName: shopper.name,
+        createdAt: activeDispatch.firestoreId ? (dispatches.find(d => d.id === activeDispatchId)?.sentAt ?? Date.now()) : Date.now(),
+        status: 'pending',
+        checkedItems: [],
+        confirmedQtys: {},
+      }
+
+      if (activeDispatch.firestoreId) {
+        // Update existing — preserve shopper's check-off progress
+        await updateDoc(doc(db, 'dispatches', firestoreId), {
+          name: activeDispatch.name,
+          items,
+          note: activeDispatch.note,
+          shopperId: shopper.id,
+          shopperName: shopper.name,
+          status: 'pending',
+        })
+      } else {
+        await setDoc(doc(db, 'dispatches', firestoreId), liveDispatchData)
+      }
+
+      setDispatches(prev => prev.map(d =>
+        d.id === activeDispatchId
+          ? { ...d, firestoreId, shopperId: shopper.id, shopperName: shopper.name, sentAt: Date.now() }
+          : d
+      ))
+      setShopperPickerOpen(false)
+      setCartOpen(false)
+    } finally {
+      setSendingShopper(false)
+    }
+  }, [store, activeDispatch, activeDispatchId, dispatches])
+
+  const addShopper = useCallback(async (name: string) => {
+    const id = `shopper-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const shopper: Shopper = { id, name, createdAt: Date.now() }
+    await setDoc(doc(db, 'shoppers', id), shopper)
+    setAddShopperOpen(false)
+  }, [])
 
   if (!store) {
     return <StorePicker locationResults={locationResults} isLoading={locationLoading} error={locationError} onSearch={searchLocations} onSelect={selectStore} />
@@ -1093,14 +1286,22 @@ export default function ShoppingApp() {
 
   if (!shoppingActive) {
     return (
-      <HomeScreen
-        store={store}
-        dispatches={dispatches}
-        activeDispatchId={activeDispatchId}
-        onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
-        onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
-        onAddDispatch={addDispatch}
-      />
+      <>
+        <HomeScreen
+          store={store}
+          dispatches={dispatches}
+          activeDispatchId={activeDispatchId}
+          shoppers={shoppers}
+          liveProgress={liveProgress}
+          onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
+          onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
+          onAddDispatch={addDispatch}
+          onAddShopper={() => setAddShopperOpen(true)}
+        />
+        {addShopperOpen && (
+          <AddShopperModal onAdd={addShopper} onClose={() => setAddShopperOpen(false)} />
+        )}
+      </>
     )
   }
 
@@ -1365,7 +1566,7 @@ export default function ShoppingApp() {
           onUpdateNote={updateNote}
           onRemove={removeFromCart}
           onSetNote={setOrderNote}
-          onGenerateLink={() => { setCartOpen(false); generateLink() }}
+          onSendDispatch={() => { setCartOpen(false); setShopperPickerOpen(true) }}
           onAddReplacement={(id) => setReplacingForId(id)}
           onRemoveReplacement={removeReplacement}
         />
@@ -1383,8 +1584,18 @@ export default function ShoppingApp() {
         )
       })()}
 
-      {shareModalOpen && (
-        <ShareModal url={shareUrl} copied={copied} onCopy={copyUrl} onClose={() => { setShareModalOpen(false); setShareUrl(null) }} />
+      {shopperPickerOpen && (
+        <ShopperPickerModal
+          shoppers={shoppers}
+          sending={sendingShopper}
+          onSend={sendToShopper}
+          onAddShopper={() => { setShopperPickerOpen(false); setAddShopperOpen(true) }}
+          onClose={() => setShopperPickerOpen(false)}
+        />
+      )}
+
+      {addShopperOpen && (
+        <AddShopperModal onAdd={addShopper} onClose={() => setAddShopperOpen(false)} />
       )}
     </div>
   )
