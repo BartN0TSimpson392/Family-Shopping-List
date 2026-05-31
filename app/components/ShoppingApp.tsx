@@ -614,7 +614,7 @@ function AdminPanel({ familyId, members, currentMemberId, onClose }: {
 function HomeScreen({
   store, dispatches, activeDispatchId, shoppers, liveProgress,
   memberName, memberRoles, isAdmin,
-  onChangeStore, onOpenDispatch, onAddDispatch, onDeleteDispatch, onManageFamily, onLogout,
+  onChangeStore, onOpenDispatch, onAddDispatch, onDeleteDispatch, onClearAllDispatches, onManageFamily, onLogout,
 }: {
   store: KrogerLocation
   dispatches: Dispatch[]
@@ -628,10 +628,12 @@ function HomeScreen({
   onOpenDispatch: (id: string) => void
   onAddDispatch: () => void
   onDeleteDispatch: (id: string) => void
+  onClearAllDispatches: () => void
   onManageFamily: () => void
   onLogout: () => void
 }) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [confirmClearAll, setConfirmClearAll] = useState(false)
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
@@ -739,7 +741,16 @@ function HomeScreen({
 
         {/* Dispatches */}
         <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-3" style={{ color: IC.textMuted }}>Your Dispatches</p>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>Your Dispatches</p>
+            {dispatches.length > 1 && (
+              <button
+                onClick={() => setConfirmClearAll(true)}
+                className="text-xs font-bold active:scale-95 transition-all duration-100"
+                style={{ color: '#EF4444' }}
+              >Clear All</button>
+            )}
+          </div>
           <div className="space-y-2">
             {dispatches.map(d => {
               const itemCount = d.cart.reduce((n, i) => n + i.quantity, 0)
@@ -834,6 +845,35 @@ function HomeScreen({
           Start Shopping →
         </button>
       </div>
+
+      {confirmClearAll && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmClearAll(false)} />
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm p-7 text-center">
+            <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4" style={{ backgroundColor: '#FEE2E2' }}>
+              <svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <p className="font-black text-lg uppercase tracking-wider mb-2" style={{ color: IC.green }}>Delete All Dispatches?</p>
+            <p className="text-sm mb-6" style={{ color: IC.textMuted }}>
+              All {dispatches.length} dispatches will be permanently deleted. This cannot be undone.
+            </p>
+            <div className="space-y-2">
+              <button
+                onClick={() => { onClearAllDispatches(); setConfirmClearAll(false) }}
+                className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
+                style={{ backgroundColor: '#EF4444' }}
+              >Delete All</button>
+              <button
+                onClick={() => setConfirmClearAll(false)}
+                className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+                style={{ backgroundColor: IC.cream, color: IC.green }}
+              >Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1773,6 +1813,18 @@ export default function ShoppingApp() {
     })
   }, [activeDispatchId])
 
+  const clearAllDispatches = useCallback(() => {
+    dispatches.forEach(d => {
+      if (d.firestoreId) deleteDoc(doc(db, 'dispatches', d.firestoreId)).catch(() => {})
+    })
+    const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: 'Dispatch 1', cart: [], note: '' }
+    dispatchCounter.current = 2
+    saveCounter(2)
+    setDispatches([fresh])
+    setActiveDispatchId(fresh.id)
+    setShoppingActive(false)
+  }, [dispatches])
+
   const setOrderNote = useCallback((note: string) => {
     updateActiveDispatch(d => ({ ...d, note }))
   }, [updateActiveDispatch])
@@ -1960,6 +2012,7 @@ export default function ShoppingApp() {
           onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
           onAddDispatch={addDispatch}
           onDeleteDispatch={deleteDispatch}
+          onClearAllDispatches={clearAllDispatches}
           onManageFamily={() => setAdminPanelOpen(true)}
           onLogout={logout}
         />
