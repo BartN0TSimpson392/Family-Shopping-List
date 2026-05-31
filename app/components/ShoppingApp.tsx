@@ -796,25 +796,23 @@ function HomeScreen({
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0 ml-3">
-                    {dispatches.length > 1 && (
-                      pendingDeleteId === d.id ? (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onDeleteDispatch(d.id); setPendingDeleteId(null) }}
-                          className="text-xs font-black px-2.5 py-1 rounded-xl active:scale-95 transition-all duration-100"
-                          style={{ backgroundColor: '#FEE2E2', color: '#EF4444' }}
-                        >Delete?</button>
-                      ) : (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setPendingDeleteId(d.id) }}
-                          className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
-                          style={{ backgroundColor: IC.cream }}
-                          aria-label="Delete dispatch"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="#9B8470" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      )
+                    {pendingDeleteId === d.id ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeleteDispatch(d.id); setPendingDeleteId(null) }}
+                        className="text-xs font-black px-2.5 py-1 rounded-xl active:scale-95 transition-all duration-100"
+                        style={{ backgroundColor: '#FEE2E2', color: '#EF4444' }}
+                      >Delete?</button>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setPendingDeleteId(d.id) }}
+                        className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+                        style={{ backgroundColor: IC.cream }}
+                        aria-label="Delete dispatch"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="#9B8470" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
                     )}
                     <svg className="w-5 h-5" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -1806,12 +1804,22 @@ export default function ShoppingApp() {
 
   const deleteDispatch = useCallback((id: string) => {
     setDispatches(prev => {
-      if (prev.length <= 1) return prev
+      if (prev.length <= 1) {
+        // Reset the last dispatch to empty instead of removing it
+        const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: 'Dispatch 1', cart: [], note: '' }
+        dispatchCounter.current = 2
+        saveCounter(2)
+        setActiveDispatchId(fresh.id)
+        return [fresh]
+      }
       const next = prev.filter(d => d.id !== id)
       if (id === activeDispatchId) setActiveDispatchId(next[0].id)
       return next
     })
-  }, [activeDispatchId])
+    // Also delete from Firestore if it was sent
+    const dispatch = dispatches.find(d => d.id === id)
+    if (dispatch?.firestoreId) deleteDoc(doc(db, 'dispatches', dispatch.firestoreId)).catch(() => {})
+  }, [activeDispatchId, dispatches])
 
   const clearAllDispatches = useCallback(() => {
     dispatches.forEach(d => {
