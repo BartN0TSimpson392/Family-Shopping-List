@@ -1211,17 +1211,30 @@ export default function ShoppingApp() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
             <input
-              type="search"
+              type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search products..."
-              className="w-full rounded-2xl pl-11 pr-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
-              style={{ border: `2px solid #E5DDD0`, color: IC.green }}
+              className="w-full rounded-2xl pl-11 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+              style={{ border: `2px solid #E5DDD0`, color: IC.green, paddingRight: searchQuery ? '2.5rem' : '1rem' }}
               onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
               onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
             />
             {isSearching && (
               <span className="absolute right-4 top-1/2 -translate-y-1/2 inline-block w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+            )}
+            {searchQuery && !isSearching && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-full transition-opacity duration-150 hover:opacity-70"
+                style={{ backgroundColor: '#E5DDD0' }}
+                aria-label="Clear search"
+              >
+                <svg className="w-3 h-3" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             )}
           </div>
         </form>
