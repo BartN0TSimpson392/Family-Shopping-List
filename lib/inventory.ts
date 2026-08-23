@@ -36,6 +36,7 @@ export interface PutAwayInput {
   image_url: string | null
   store: StoreType
   original_product_id: string
+  size: string | null
   unit_price: number | null
 }
 
@@ -66,6 +67,13 @@ export interface CreateInventoryInput {
   image_url: string | null
   store: InventoryStore
   barcode: string | null
+  size: string | null
+  unit_price: number | null
+  // Set when a barcode scan resolved to an official store catalog item
+  // (currently: Kroger, via lib/kroger.ts product search) — lets later
+  // dispatch/restock flows reference the store's real SKU instead of this
+  // pantry row's own id.
+  original_product_id: string | null
 }
 
 // Plain insert for manually-added pantry items (the "Add Pantry Item" flow,

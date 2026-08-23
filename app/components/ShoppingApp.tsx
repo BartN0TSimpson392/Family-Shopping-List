@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { collection, doc, setDoc, updateDoc, onSnapshot, getDoc, getDocs, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { subscribeInventory, updateInventoryStatus, putAwayItem, createInventoryItem, lookupBarcode } from '@/lib/inventory'
+import type { OpenFoodFactsLookup } from '@/lib/inventory'
 import type { KrogerLocation, KrogerProduct, CostcoProduct, Product, StoreType, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch, FamilyMember, MemberRole, InventoryItem, InventoryStatus, InventoryStore } from '@/lib/types'
 
 const HISTORY_KEY = 'ic-purchase-history'
@@ -1893,6 +1894,8 @@ function PantryItemRow({ item, onSetStatus }: {
         <p className="text-sm font-semibold leading-tight truncate" style={{ color: IC.green }}>{item.name}</p>
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
           {item.store !== 'other' && <StoreTag store={item.store} />}
+          {item.size && <span className="text-[10px] font-semibold" style={{ color: IC.textMuted }}>{item.size}</span>}
+          {item.unit_price != null && <span className="text-[10px] font-black" style={{ color: IC.gold }}>${item.unit_price.toFixed(2)}</span>}
           <span className="text-[10px]" style={{ color: IC.textMuted }}>Restocked {timeAgo(item.last_restocked_at)}</span>
         </div>
       </div>
@@ -2401,44 +2404,120 @@ const PANTRY_STORE_OPTIONS: { key: InventoryStore; label: string; color: string 
   { key: 'other', label: 'Other', color: IC.textMuted },
 ]
 
-function AddPantryItemModal({ onSave, onClose }: {
-  onSave: (input: { name: string; brand: string; imageUrl: string; store: InventoryStore; barcode: string }) => Promise<void>
+// Kroger's public API has no UPC/barcode filter (`filter.upc` returns a 400
+// — verified against the live API), and neither the raw scanned code nor a
+// zero-padded variant reliably matches Kroger's own catalog id via
+// `filter.productId` either. `filter.term` is the only thing that works, so
+// callers try the raw code as a term first, then fall back to a name-based
+// search (see AddPantryItemModal.handleDetected).
+async function searchKrogerTerm(term: string, locationId: string): Promise<Product[]> {
+  const params = new URLSearchParams({ term, locationId, start: '0' })
+  const res = await fetch(`/api/kroger/products?${params}`)
+  if (!res.ok) return []
+  const data = await res.json()
+  return ((data.products ?? []) as KrogerProduct[]).map(krogerToProduct)
+}
+
+export interface AddPantryItemInput {
+  name: string
+  brand: string
+  imageUrl: string
+  store: InventoryStore
+  barcode: string
+  size: string
+  unitPrice: number | null
+  originalProductId: string | null
+}
+
+function AddPantryItemModal({ krogerLocation, onSave, onClose }: {
+  krogerLocation: KrogerLocation | null
+  onSave: (input: AddPantryItemInput) => Promise<void>
   onClose: () => void
 }) {
   const [name, setName] = useState('')
   const [brand, setBrand] = useState('')
   const [imageUrl, setImageUrl] = useState('')
+  const [size, setSize] = useState('')
+  const [unitPrice, setUnitPrice] = useState<number | null>(null)
   const [store, setStore] = useState<InventoryStore>('other')
   const [barcode, setBarcode] = useState('')
+  const [matchedProductId, setMatchedProductId] = useState<string | null>(null)
   const [scannerOpen, setScannerOpen] = useState(false)
   const [lookupLoading, setLookupLoading] = useState(false)
   const [lookupNotice, setLookupNotice] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
+  // Hand-editing any of these after a barcode match invalidates the SKU
+  // link — we can no longer promise `original_product_id` describes what's
+  // actually in the form.
+  const editField = (setter: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setter(e.target.value)
+    setMatchedProductId(null)
+  }
+
   const handleDetected = useCallback((code: string) => {
     setScannerOpen(false)
     setBarcode(code)
+    setMatchedProductId(null)
     setLookupLoading(true)
     setLookupNotice('')
-    lookupBarcode(code)
-      .then(result => {
-        if (result.found) {
-          if (result.name) setName(result.name)
-          if (result.brand) setBrand(result.brand)
-          if (result.imageUrl) setImageUrl(result.imageUrl)
-          setLookupNotice(`✓ Found "${result.name ?? 'product'}" — review the details below and save`)
-        } else {
-          playBarcodeNotFoundTone()
-          setLookupNotice(`No match for barcode ${code} in Open Food Facts — enter the details manually`)
+
+    const applyKrogerMatch = (kp: Product, via: string) => {
+      setName(kp.name)
+      setBrand(kp.brand)
+      setImageUrl(kp.image)
+      setSize(kp.size)
+      setUnitPrice(kp.price > 0 ? kp.price : null)
+      setMatchedProductId(kp.id)
+      setLookupNotice(`✓ Matched official Kroger product (${via}) — review before saving`)
+    }
+    const applyOffResult = (result: OpenFoodFactsLookup, prefix = '') => {
+      if (result.found) {
+        if (result.name) setName(result.name)
+        if (result.brand) setBrand(result.brand)
+        if (result.imageUrl) setImageUrl(result.imageUrl)
+        setLookupNotice(`${prefix}✓ Found "${result.name ?? 'product'}" via Open Food Facts — review before saving`)
+      } else {
+        playBarcodeNotFoundTone()
+        setLookupNotice(`${prefix}No match for barcode ${code} — enter the details manually`)
+      }
+    }
+
+    ;(async () => {
+      try {
+        if (store === 'kroger') {
+          if (!krogerLocation) {
+            applyOffResult(await lookupBarcode(code), 'Pick a Kroger store in the app to match official Kroger products. ')
+            return
+          }
+          // 1. Kroger has no UPC filter (verified against the live API — see
+          //    searchKrogerTerm) — try the raw scanned code as a search term.
+          let matches = await searchKrogerTerm(code, krogerLocation.locationId)
+          if (matches.length > 0) { applyKrogerMatch(matches[0], 'by barcode'); return }
+
+          // 2. Fall back to Open Food Facts purely to recover a product
+          //    name, then retry Kroger's catalog search by that name.
+          const off = await lookupBarcode(code).catch((): OpenFoodFactsLookup => ({ found: false }))
+          if (off.found && off.name) {
+            matches = await searchKrogerTerm(off.name, krogerLocation.locationId)
+            if (matches.length > 0) { applyKrogerMatch(matches[0], `best match for "${off.name}"`); return }
+          }
+          applyOffResult(off, off.found ? 'No exact Kroger match — ' : '')
+          return
         }
-      })
-      .catch((e: unknown) => {
+
+        // Costco / Other: Costco's catalog has no reliable barcode lookup in
+        // this app, so go straight to Open Food Facts.
+        applyOffResult(await lookupBarcode(code))
+      } catch (e) {
         playBarcodeNotFoundTone()
         setLookupNotice(e instanceof Error ? e.message : 'Lookup failed — enter the details manually')
-      })
-      .finally(() => setLookupLoading(false))
-  }, [])
+      } finally {
+        setLookupLoading(false)
+      }
+    })()
+  }, [store, krogerLocation])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -2446,7 +2525,16 @@ function AddPantryItemModal({ onSave, onClose }: {
     setSaving(true)
     setSaveError('')
     try {
-      await onSave({ name: name.trim(), brand: brand.trim(), imageUrl: imageUrl.trim(), store, barcode: barcode.trim() })
+      await onSave({
+        name: name.trim(),
+        brand: brand.trim(),
+        imageUrl: imageUrl.trim(),
+        store,
+        barcode: barcode.trim(),
+        size: size.trim(),
+        unitPrice,
+        originalProductId: matchedProductId,
+      })
       onClose()
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Failed to save item')
@@ -2471,7 +2559,29 @@ function AddPantryItemModal({ onSave, onClose }: {
           </button>
 
           <h3 className="text-xl font-black uppercase tracking-widest mb-1" style={{ color: IC.green }}>Add Pantry Item</h3>
-          <p className="text-sm mb-5" style={{ color: IC.textMuted }}>Scan a barcode to auto-fill, or enter the details yourself.</p>
+          <p className="text-sm mb-5" style={{ color: IC.textMuted }}>Pick a store, then scan a barcode to auto-fill — or enter the details yourself.</p>
+
+          <div className="mb-4">
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Store</label>
+            <div className="flex gap-2">
+              {PANTRY_STORE_OPTIONS.map(opt => {
+                const active = store === opt.key
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => { setStore(opt.key); setMatchedProductId(null) }}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest transition-all duration-150 active:scale-[0.97]"
+                    style={{
+                      backgroundColor: active ? `${opt.color}18` : IC.cream,
+                      color: active ? opt.color : IC.textMuted,
+                      border: active ? `2px solid ${opt.color}` : '1px solid transparent',
+                    }}
+                  >{opt.label}</button>
+                )
+              })}
+            </div>
+          </div>
 
           <button
             type="button"
@@ -2483,7 +2593,7 @@ function AddPantryItemModal({ onSave, onClose }: {
           {lookupLoading && (
             <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-2xl" style={{ backgroundColor: IC.cream }}>
               <span className="inline-block w-4 h-4 border-2 border-t-transparent rounded-full animate-spin flex-shrink-0" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
-              <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Looking up barcode…</p>
+              <p className="text-sm font-medium" style={{ color: IC.textMuted }}>{store === 'kroger' ? 'Looking up barcode at Kroger…' : 'Looking up barcode…'}</p>
             </div>
           )}
           {lookupNotice && !lookupLoading && (
@@ -2494,16 +2604,23 @@ function AddPantryItemModal({ onSave, onClose }: {
 
           <form onSubmit={handleSubmit} className="space-y-3">
             {barcode && (
-              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: IC.textMuted }}>
-                Barcode <span className="font-mono normal-case">{barcode}</span>
-              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: IC.textMuted }}>
+                  Barcode <span className="font-mono normal-case">{barcode}</span>
+                </p>
+                {matchedProductId && (
+                  <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${IC.kroger}18`, color: IC.kroger }}>
+                    ✓ Official Kroger SKU
+                  </span>
+                )}
+              </div>
             )}
             <div>
               <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Name</label>
               <input
                 type="text"
                 value={name}
-                onChange={e => setName(e.target.value)}
+                onChange={editField(setName)}
                 placeholder="e.g. Kirkland Signature Coffee"
                 className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
                 style={{ border: '2px solid #E5DDD0', color: IC.green }}
@@ -2516,13 +2633,46 @@ function AddPantryItemModal({ onSave, onClose }: {
               <input
                 type="text"
                 value={brand}
-                onChange={e => setBrand(e.target.value)}
+                onChange={editField(setBrand)}
                 placeholder="e.g. Kirkland Signature"
                 className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
                 style={{ border: '2px solid #E5DDD0', color: IC.green }}
                 onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
                 onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
               />
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Size <span className="normal-case font-normal">(optional)</span></label>
+                <input
+                  type="text"
+                  value={size}
+                  onChange={editField(setSize)}
+                  placeholder="e.g. 12 oz"
+                  className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+                  style={{ border: '2px solid #E5DDD0', color: IC.green }}
+                  onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+                  onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Price <span className="normal-case font-normal">(optional)</span></label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 font-bold text-sm" style={{ color: IC.textMuted }}>$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={unitPrice ?? ''}
+                    onChange={e => { setUnitPrice(e.target.value === '' ? null : Number(e.target.value)); setMatchedProductId(null) }}
+                    placeholder="0.00"
+                    className="w-full rounded-2xl pl-7 pr-3 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+                    style={{ border: '2px solid #E5DDD0', color: IC.green }}
+                    onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+                    onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+                  />
+                </div>
+              </div>
             </div>
             <div>
               <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Image URL <span className="normal-case font-normal">(optional)</span></label>
@@ -2531,34 +2681,13 @@ function AddPantryItemModal({ onSave, onClose }: {
                 <input
                   type="text"
                   value={imageUrl}
-                  onChange={e => setImageUrl(e.target.value)}
+                  onChange={editField(setImageUrl)}
                   placeholder="https://..."
                   className="flex-1 min-w-0 rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
                   style={{ border: '2px solid #E5DDD0', color: IC.green }}
                   onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
                   onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
                 />
-              </div>
-            </div>
-            <div>
-              <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Store</label>
-              <div className="flex gap-2">
-                {PANTRY_STORE_OPTIONS.map(opt => {
-                  const active = store === opt.key
-                  return (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => setStore(opt.key)}
-                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest transition-all duration-150 active:scale-[0.97]"
-                      style={{
-                        backgroundColor: active ? `${opt.color}18` : IC.cream,
-                        color: active ? opt.color : IC.textMuted,
-                        border: active ? `2px solid ${opt.color}` : '1px solid transparent',
-                      }}
-                    >{opt.label}</button>
-                  )
-                })}
               </div>
             </div>
             {saveError && <p className="text-sm font-medium" style={{ color: '#e53935' }}>{saveError}</p>}
@@ -2873,9 +3002,22 @@ export default function ShoppingApp() {
     })
   }, [])
 
+  // Merges freshly-written row(s) into local pantry state immediately, so
+  // the person who just acted sees it right away instead of waiting on the
+  // Realtime round-trip (subscribeInventory still runs alongside this, so
+  // other family members' devices stay in sync too).
+  const mergeInventoryItems = useCallback((rows: InventoryItem[]) => {
+    setInventoryItems(prev => {
+      const byId = new Map(prev.map(i => [i.id, i]))
+      for (const row of rows) byId.set(row.id, row)
+      return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
+    })
+  }, [])
+
   const handleSetInventoryStatus = useCallback(async (item: InventoryItem, status: InventoryStatus) => {
     try {
-      await updateInventoryStatus(item.id, status)
+      const updated = await updateInventoryStatus(item.id, status)
+      mergeInventoryItems([updated])
       if ((status === 'running_low' || status === 'out_of_stock') && (item.store === 'kroger' || item.store === 'costco')) {
         const product: Product = {
           id: item.original_product_id || item.id,
@@ -2884,43 +3026,49 @@ export default function ShoppingApp() {
           brand: item.brand || '',
           image: item.image_url || '',
           price: item.unit_price || 0,
-          size: '',
+          size: item.size || '',
         }
         upsertRestockItem(item.store, product, status)
       }
     } catch (e) {
       setInventoryError(e instanceof Error ? e.message : 'Failed to update pantry status')
     }
-  }, [upsertRestockItem])
+  }, [upsertRestockItem, mergeInventoryItems])
 
   // "Put Away Groceries" ingestion: upserts each checked cart item into
   // inventory_items (status in_stock, last_restocked_at refreshed), then
   // marks the dispatch as put away locally so the prompt doesn't reappear.
   const handlePutAwayDone = useCallback(async (dispatchId: string, items: CartItem[]) => {
     try {
-      await Promise.all(items.map(item => putAwayItem({
+      const saved = await Promise.all(items.map(item => putAwayItem({
         name: item.product.name,
         brand: item.product.brand || null,
         image_url: item.product.image || null,
         store: item.product.store,
         original_product_id: item.product.id,
+        size: item.product.size || null,
         unit_price: item.product.price || null,
       })))
+      mergeInventoryItems(saved)
       setDispatches(prev => prev.map(d => d.id === dispatchId ? { ...d, putAwayAt: Date.now() } : d))
     } catch (e) {
       setInventoryError(e instanceof Error ? e.message : 'Failed to save pantry items')
     }
-  }, [])
+  }, [mergeInventoryItems])
 
-  const handleAddPantryItem = useCallback(async (input: { name: string; brand: string; imageUrl: string; store: InventoryStore; barcode: string }) => {
-    await createInventoryItem({
+  const handleAddPantryItem = useCallback(async (input: AddPantryItemInput) => {
+    const created = await createInventoryItem({
       name: input.name,
       brand: input.brand || null,
       image_url: input.imageUrl || null,
       store: input.store,
       barcode: input.barcode || null,
+      size: input.size || null,
+      unit_price: input.unitPrice,
+      original_product_id: input.originalProductId,
     })
-  }, [])
+    mergeInventoryItems([created])
+  }, [mergeInventoryItems])
 
   const removeFromCart = useCallback((productId: string) => {
     updateActiveDispatch(d => ({ ...d, cart: d.cart.filter(i => i.product.id !== productId) }))
@@ -3220,6 +3368,7 @@ export default function ShoppingApp() {
         />
         {addPantryItemOpen && (
           <AddPantryItemModal
+            krogerLocation={store}
             onSave={handleAddPantryItem}
             onClose={() => setAddPantryItemOpen(false)}
           />

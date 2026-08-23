@@ -199,8 +199,8 @@ export interface LiveDispatch {
 export type InventoryStatus = 'in_stock' | 'running_low' | 'out_of_stock'
 export type InventoryStore = StoreType | 'other'
 
-// Mirrors the `inventory_items` table — see supabase/migrations/0001_inventory_items.sql
-// and 0002_inventory_items_barcode.sql
+// Mirrors the `inventory_items` table — see supabase/migrations/0001_inventory_items.sql,
+// 0002_inventory_items_barcode.sql, and 0003_inventory_items_size.sql
 export interface InventoryItem {
   id: string
   name: string
@@ -210,6 +210,7 @@ export interface InventoryItem {
   status: InventoryStatus
   original_product_id: string | null
   barcode: string | null
+  size: string | null
   unit_price: number | null
   last_restocked_at: string
   updated_at: string
