@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { collection, doc, onSnapshot, query, where, updateDoc, setDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import type { LiveDispatch, MemberRole, SharedItem } from '@/lib/types'
+import type { LiveDispatch, MemberRole, SharedItem, StoreType } from '@/lib/types'
 
 const FAMILY_ID_KEY = 'ic-family-id'
 const MEMBER_ID_KEY = 'ic-member-id'
@@ -18,7 +18,25 @@ const IC = {
   greenMid: '#2D5240',
   gold: '#C4943A',
   textMuted: '#5A7A6A',
+  kroger: '#2A6CB0',
+  costco: '#C0272D',
 } as const
+
+const STORE_ACCENT: Record<StoreType, string> = { kroger: IC.kroger, costco: IC.costco }
+const STORE_LABEL: Record<StoreType, string> = { kroger: 'Kroger', costco: 'Costco' }
+
+function StoreTag({ store }: { store: StoreType }) {
+  const color = STORE_ACCENT[store]
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0"
+      style={{ backgroundColor: `${color}18`, color }}
+    >
+      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+      {STORE_LABEL[store]}
+    </span>
+  )
+}
 
 function RadarLogoWhite({ className = '' }: { className?: string }) {
   return (
@@ -118,11 +136,12 @@ function DispatchListScreen({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                        <StoreTag store={d.storeType ?? 'kroger'} />
                         {d.status === 'complete' && (
                           <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${IC.gold}20`, color: IC.gold }}>All Found ✓</span>
                         )}
                       </div>
-                      <p className="text-xs mt-0.5 truncate" style={{ color: IC.textMuted }}>{d.store} · {d.addr}</p>
+                      <p className="text-xs mt-0.5 truncate" style={{ color: IC.textMuted }}>{d.addr ? `${d.store} · ${d.addr}` : d.store}</p>
                     </div>
                     <div className="flex-shrink-0 text-right">
                       <span className="text-2xl font-black leading-none" style={{ color: checked === total && total > 0 ? IC.gold : IC.green }}>{checked}</span>
@@ -187,6 +206,7 @@ function DispatchDetailScreen({
   const [addressCopied, setAddressCopied] = useState(false)
 
   const copyAddress = () => {
+    if (!dispatch.addr) return
     navigator.clipboard.writeText(`${dispatch.store}, ${dispatch.addr}`).then(() => {
       setAddressCopied(true)
       setTimeout(() => setAddressCopied(false), 2000)
@@ -236,13 +256,20 @@ function DispatchDetailScreen({
                 </svg>
                 <span className="text-[10px] font-black uppercase tracking-widest">All Dispatches</span>
               </button>
-              <h1 className="font-black text-xl text-white uppercase tracking-wider leading-tight">{dispatch.name}</h1>
-              <button onClick={copyAddress} className="text-left active:opacity-70 transition-opacity mt-0.5">
-                <p className="text-xs truncate" style={{ color: addressCopied ? '#86efac' : IC.gold }}>
-                  {addressCopied ? '✓ Address copied!' : dispatch.store}
-                </p>
-                {!addressCopied && <p className="text-xs truncate opacity-60 text-white">{dispatch.addr} · tap to copy</p>}
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="font-black text-xl text-white uppercase tracking-wider leading-tight">{dispatch.name}</h1>
+                <StoreTag store={dispatch.storeType ?? 'kroger'} />
+              </div>
+              {dispatch.addr ? (
+                <button onClick={copyAddress} className="text-left active:opacity-70 transition-opacity mt-0.5">
+                  <p className="text-xs truncate" style={{ color: addressCopied ? '#86efac' : IC.gold }}>
+                    {addressCopied ? '✓ Address copied!' : dispatch.store}
+                  </p>
+                  {!addressCopied && <p className="text-xs truncate opacity-60 text-white">{dispatch.addr} · tap to copy</p>}
+                </button>
+              ) : (
+                <p className="text-xs truncate mt-0.5" style={{ color: IC.gold }}>{dispatch.store}</p>
+              )}
             </div>
             <div className="text-right flex-shrink-0 rounded-2xl px-3 py-2" style={{ backgroundColor: 'rgba(255,255,255,0.12)' }}>
               <p className="text-3xl font-black text-white leading-none">{checkedCount}</p>

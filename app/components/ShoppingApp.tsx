@@ -4,26 +4,36 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { collection, doc, setDoc, updateDoc, onSnapshot, getDoc, getDocs, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import type { KrogerLocation, KrogerProduct, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch, FamilyMember, MemberRole } from '@/lib/types'
+import { subscribeInventory, updateInventoryStatus, putAwayItem, createInventoryItem, lookupBarcode } from '@/lib/inventory'
+import type { KrogerLocation, KrogerProduct, CostcoProduct, Product, StoreType, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch, FamilyMember, MemberRole, InventoryItem, InventoryStatus, InventoryStore } from '@/lib/types'
 
 const HISTORY_KEY = 'ic-purchase-history'
 const FAVORITES_KEY = 'ic-favorites'
 const STORE_KEY = 'ic-store'
+const STORE_TYPE_KEY = 'ic-store-type'
 const DISPATCHES_KEY = 'ic-dispatches'
-const COUNTER_KEY = 'ic-dispatch-counter'
+const COUNTER_KEY = 'ic-dispatch-counters'
 const FAMILY_ID_KEY = 'ic-family-id'
 const MEMBER_ID_KEY = 'ic-member-id'
 const MEMBER_NAME_KEY = 'ic-member-name'
 const MEMBER_ROLES_KEY = 'ic-member-roles'
 
+const STORE_LABEL: Record<StoreType, string> = { kroger: 'Kroger', costco: 'Costco' }
+
 function loadHistory(): HistoryItem[] {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') as HistoryItem[]
+    return raw.map(h => ({ ...h, store: h.store ?? 'kroger' }))
+  } catch { return [] }
 }
 function saveHistory(items: HistoryItem[]) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(items)) } catch { /* ignore */ }
 }
 function loadFavorites(): HistoryItem[] {
-  try { return JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? '[]') } catch { return [] }
+  try {
+    const raw = JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? '[]') as HistoryItem[]
+    return raw.map(h => ({ ...h, store: h.store ?? 'kroger' }))
+  } catch { return [] }
 }
 function saveFavorites(items: HistoryItem[]) {
   try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(items)) } catch { /* ignore */ }
@@ -34,43 +44,40 @@ function loadStore(): KrogerLocation | null {
 function saveStore(s: KrogerLocation | null) {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(s)) } catch { /* ignore */ }
 }
+function loadStoreType(): StoreType {
+  try {
+    const raw = localStorage.getItem(STORE_TYPE_KEY)
+    return raw === 'costco' ? 'costco' : 'kroger'
+  } catch { return 'kroger' }
+}
+function saveStoreType(t: StoreType) {
+  try { localStorage.setItem(STORE_TYPE_KEY, t) } catch { /* ignore */ }
+}
 function loadDispatches(): Dispatch[] | null {
-  try { return JSON.parse(localStorage.getItem(DISPATCHES_KEY) ?? 'null') } catch { return null }
+  try {
+    const raw = JSON.parse(localStorage.getItem(DISPATCHES_KEY) ?? 'null') as Dispatch[] | null
+    return raw ? raw.map(d => ({ ...d, store: d.store ?? 'kroger' })) : null
+  } catch { return null }
 }
 function saveDispatches(d: Dispatch[]) {
   try { localStorage.setItem(DISPATCHES_KEY, JSON.stringify(d)) } catch { /* ignore */ }
 }
-function loadCounter(): number {
-  try { return parseInt(localStorage.getItem(COUNTER_KEY) ?? '2', 10) } catch { return 2 }
+function loadCounters(): Record<StoreType, number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COUNTER_KEY) ?? 'null')
+    if (raw && typeof raw === 'object') return { kroger: raw.kroger ?? 2, costco: raw.costco ?? 2 }
+  } catch { /* ignore */ }
+  return { kroger: 2, costco: 2 }
 }
-function saveCounter(n: number) {
-  try { localStorage.setItem(COUNTER_KEY, String(n)) } catch { /* ignore */ }
-}
-function historyItemToProduct(h: HistoryItem): KrogerProduct {
-  return {
-    productId: h.productId,
-    description: h.description,
-    brand: h.brand,
-    categories: [],
-    images: h.img ? [{ perspective: 'front', featured: true, sizes: [{ id: 'thumbnail', url: h.img }] }] : [],
-    items: [{ itemId: h.productId, price: { regular: h.price, promo: 0 }, size: h.size, soldBy: 'Unit' }],
-    aisleLocations: [],
-    upc: '',
-  }
-}
-function addToHistory(product: KrogerProduct, current: HistoryItem[]): HistoryItem[] {
-  const entry: HistoryItem = {
-    productId: product.productId,
-    description: product.description,
-    brand: product.brand || '',
-    img: getProductImage(product, 'thumbnail') || getProductImage(product, 'small'),
-    size: product.items?.[0]?.size ?? '',
-    price: product.items?.[0]?.price?.regular ?? 0,
-  }
-  return [entry, ...current.filter(h => h.productId !== product.productId)].slice(0, 30)
+function saveCounters(c: Record<StoreType, number>) {
+  try { localStorage.setItem(COUNTER_KEY, JSON.stringify(c)) } catch { /* ignore */ }
 }
 
-function getProductImage(product: KrogerProduct, size: string): string {
+// ── Product normalization ────────────────────────────────────────────────────
+// Both stores' raw API shapes get flattened into `Product` right away so the
+// rest of the app (cart, search grid, dispatch review) never branches on store.
+
+function getKrogerImage(product: KrogerProduct, size: string): string {
   for (const img of product.images ?? []) {
     if (img.perspective === 'front') {
       const found = img.sizes?.find((s) => s.id === size)
@@ -86,11 +93,57 @@ function getProductImage(product: KrogerProduct, size: string): string {
   return ''
 }
 
-function getPrice(product: KrogerProduct): number {
-  return product.items?.[0]?.price?.regular ?? 0
+function krogerToProduct(p: KrogerProduct): Product {
+  return {
+    id: p.productId,
+    store: 'kroger',
+    name: p.description,
+    brand: p.brand || '',
+    image: getKrogerImage(p, 'thumbnail') || getKrogerImage(p, 'small'),
+    price: p.items?.[0]?.price?.regular ?? 0,
+    size: p.items?.[0]?.size ?? '',
+    aisle: p.aisleLocations?.[0]?.description,
+    aisleNum: p.aisleLocations?.[0]?.number,
+    seq: parseInt(p.aisleLocations?.[0]?.sequenceNumber || '0', 10),
+  }
 }
-function getSize(product: KrogerProduct): string {
-  return product.items?.[0]?.size ?? ''
+
+function costcoToProduct(p: CostcoProduct): Product {
+  return {
+    id: p.id,
+    store: 'costco',
+    name: p.title,
+    brand: p.brand,
+    image: p.image,
+    price: p.price,
+    size: p.size,
+    inStock: p.inStock,
+  }
+}
+
+function historyItemToProduct(h: HistoryItem): Product {
+  return {
+    id: h.productId,
+    store: h.store,
+    name: h.description,
+    brand: h.brand,
+    image: h.img,
+    price: h.price,
+    size: h.size,
+  }
+}
+
+function addToHistory(product: Product, current: HistoryItem[]): HistoryItem[] {
+  const entry: HistoryItem = {
+    productId: product.id,
+    description: product.name,
+    brand: product.brand || '',
+    img: product.image,
+    size: product.size,
+    price: product.price,
+    store: product.store,
+  }
+  return [entry, ...current.filter(h => !(h.productId === product.id && h.store === product.store))].slice(0, 30)
 }
 
 // ── Brand tokens ──────────────────────────────────────────────────────────────
@@ -103,7 +156,72 @@ const IC = {
   goldLight: '#D4A84A',
   text: '#1C3B2A',
   textMuted: '#5A7A6A',
+  kroger: '#2A6CB0',
+  costco: '#C0272D',
 } as const
+
+const STORE_ACCENT: Record<StoreType, string> = { kroger: IC.kroger, costco: IC.costco }
+
+// ── Pantry status tokens ─────────────────────────────────────────────────────
+const STATUS_CONFIG: Record<InventoryStatus, { emoji: string; label: string; color: string }> = {
+  in_stock: { emoji: '🟢', label: 'In Stock', color: '#22A559' },
+  running_low: { emoji: '🟡', label: 'Running Low', color: '#D4A017' },
+  out_of_stock: { emoji: '🔴', label: 'Out of Stock', color: '#D9483A' },
+}
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(ms / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 30) return `${days}d ago`
+  return new Date(iso).toLocaleDateString()
+}
+
+// ── StoreTag / StoreTypeTabs ─────────────────────────────────────────────────
+
+function StoreTag({ store, className = '' }: { store: StoreType; className?: string }) {
+  const color = STORE_ACCENT[store]
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0 ${className}`}
+      style={{ backgroundColor: `${color}18`, color }}
+    >
+      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+      {STORE_LABEL[store]}
+    </span>
+  )
+}
+
+function StoreTypeTabs({ active, onChange }: { active: StoreType; onChange: (t: StoreType) => void }) {
+  const types: StoreType[] = ['kroger', 'costco']
+  return (
+    <div className="flex gap-1 p-1 rounded-2xl" style={{ backgroundColor: IC.cream, border: '1px solid #E5DDD0' }}>
+      {types.map(t => {
+        const isActive = active === t
+        const color = STORE_ACCENT[t]
+        return (
+          <button
+            key={t}
+            onClick={() => onChange(t)}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest transition-all duration-150 active:scale-[0.97]"
+            style={{
+              backgroundColor: isActive ? 'white' : 'transparent',
+              color: isActive ? color : IC.textMuted,
+              boxShadow: isActive ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
+            }}
+          >
+            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+            {STORE_LABEL[t]}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 // ── Logo ──────────────────────────────────────────────────────────────────────
 
@@ -612,28 +730,34 @@ function AdminPanel({ familyId, members, currentMemberId, onClose }: {
 // ── HomeScreen ────────────────────────────────────────────────────────────────
 
 function HomeScreen({
-  store, dispatches, activeDispatchId, shoppers, liveProgress,
+  krogerLocation, activeStoreType, dispatches, activeDispatchId, shoppers, liveProgress,
   memberName, memberRoles, isAdmin,
-  onChangeStore, onOpenDispatch, onAddDispatch, onDeleteDispatch, onClearAllDispatches, onManageFamily, onLogout,
+  onChangeStoreType, onChangeStore, onOpenDispatch, onAddDispatch, onDeleteDispatch, onClearAllDispatches, onManageFamily, onLogout, onOpenPantry, onPutAway,
 }: {
-  store: KrogerLocation
+  krogerLocation: KrogerLocation | null
+  activeStoreType: StoreType
   dispatches: Dispatch[]
   activeDispatchId: string
   shoppers: Shopper[]
-  liveProgress: Record<string, { checked: number; total: number; checkedItems: string[] }>
+  liveProgress: Record<string, { checked: number; total: number; checkedItems: string[]; status: LiveDispatch['status'] }>
   memberName: string
   memberRoles: MemberRole[]
   isAdmin: boolean
+  onChangeStoreType: (t: StoreType) => void
   onChangeStore: () => void
   onOpenDispatch: (id: string) => void
   onAddDispatch: () => void
   onDeleteDispatch: (id: string) => void
-  onClearAllDispatches: () => void
+  onClearAllDispatches: (t: StoreType) => void
   onManageFamily: () => void
   onLogout: () => void
+  onOpenPantry: () => void
+  onPutAway: (id: string) => void
 }) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [confirmClearAll, setConfirmClearAll] = useState(false)
+  const storeDispatches = dispatches.filter(d => d.store === activeStoreType)
+  const accent = STORE_ACCENT[activeStoreType]
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
@@ -647,6 +771,17 @@ function HomeScreen({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={onOpenPantry}
+              className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+              style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}
+              aria-label="Family Pantry"
+              title="Family Pantry"
+            >
+              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+            </button>
             {isAdmin && (
               <button
                 onClick={onManageFamily}
@@ -675,23 +810,39 @@ function HomeScreen({
       </header>
 
       <div className="flex-1 px-4 py-8 max-w-lg mx-auto w-full space-y-6">
-        {/* Store card */}
-        <div className="bg-white rounded-2xl px-5 py-4 shadow-sm" style={{ border: '1px solid #E5DDD0' }}>
-          <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-2" style={{ color: IC.textMuted }}>Your Store</p>
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <p className="font-bold text-base" style={{ color: IC.green }}>{store.name}</p>
-              <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
-                {store.address.addressLine1}, {store.address.city}, {store.address.state}
-              </p>
-            </div>
-            <button
-              onClick={onChangeStore}
-              className="text-xs font-bold flex-shrink-0 active:scale-95 transition-all duration-100"
-              style={{ color: IC.gold }}
-            >Change Store</button>
-          </div>
+        {/* Store picker */}
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-2" style={{ color: IC.textMuted }}>Shopping For</p>
+          <StoreTypeTabs active={activeStoreType} onChange={onChangeStoreType} />
         </div>
+
+        {/* Store card */}
+        {activeStoreType === 'kroger' ? (
+          krogerLocation && (
+            <div className="bg-white rounded-2xl px-5 py-4 shadow-sm" style={{ border: `1px solid #E5DDD0`, borderLeft: `3px solid ${accent}` }}>
+              <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-2" style={{ color: IC.textMuted }}>Your Kroger Store</p>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-base" style={{ color: IC.green }}>{krogerLocation.name}</p>
+                  <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
+                    {krogerLocation.address.addressLine1}, {krogerLocation.address.city}, {krogerLocation.address.state}
+                  </p>
+                </div>
+                <button
+                  onClick={onChangeStore}
+                  className="text-xs font-bold flex-shrink-0 active:scale-95 transition-all duration-100"
+                  style={{ color: IC.gold }}
+                >Change Store</button>
+              </div>
+            </div>
+          )
+        ) : (
+          <div className="bg-white rounded-2xl px-5 py-4 shadow-sm" style={{ border: `1px solid #E5DDD0`, borderLeft: `3px solid ${accent}` }}>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-2" style={{ color: IC.textMuted }}>Costco</p>
+            <p className="font-bold text-base" style={{ color: IC.green }}>Searching nationwide</p>
+            <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>No warehouse selection needed — results come straight from Costco.com.</p>
+          </div>
+        )}
 
         {/* Shoppers */}
         <div>
@@ -742,8 +893,8 @@ function HomeScreen({
         {/* Dispatches */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>Your Dispatches</p>
-            {dispatches.length > 1 && (
+            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>{STORE_LABEL[activeStoreType]} Dispatches</p>
+            {storeDispatches.length > 1 && (
               <button
                 onClick={() => setConfirmClearAll(true)}
                 className="text-xs font-bold active:scale-95 transition-all duration-100"
@@ -752,11 +903,12 @@ function HomeScreen({
             )}
           </div>
           <div className="space-y-2">
-            {dispatches.map(d => {
+            {storeDispatches.map(d => {
               const itemCount = d.cart.reduce((n, i) => n + i.quantity, 0)
-              const total = d.cart.reduce((sum, i) => sum + getPrice(i.product) * i.quantity, 0)
+              const total = d.cart.reduce((sum, i) => sum + i.product.price * i.quantity, 0)
               const isActive = d.id === activeDispatchId
               const progress = d.firestoreId ? liveProgress[d.id] : null
+              const isDelivered = progress?.status === 'complete' || progress?.status === 'archived'
               return (
                 <div
                   key={d.id}
@@ -767,13 +919,24 @@ function HomeScreen({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                      <StoreTag store={d.store} />
                       {d.shopperName && (
                         <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${IC.gold}20`, color: IC.gold }}>
                           → {d.shopperName}
                         </span>
                       )}
                     </div>
-                    {progress ? (
+                    {isDelivered && !d.putAwayAt ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onPutAway(d.id) }}
+                        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider text-white transition-all duration-150 active:scale-95"
+                        style={{ backgroundColor: IC.green }}
+                      >
+                        📦 Put Away Groceries
+                      </button>
+                    ) : isDelivered && d.putAwayAt ? (
+                      <p className="text-xs font-bold mt-1.5" style={{ color: IC.textMuted }}>✓ Put away {timeAgo(new Date(d.putAwayAt).toISOString())}</p>
+                    ) : progress ? (
                       <div className="mt-1.5">
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: '#E5DDD0' }}>
@@ -853,13 +1016,13 @@ function HomeScreen({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
             </div>
-            <p className="font-black text-lg uppercase tracking-wider mb-2" style={{ color: IC.green }}>Delete All Dispatches?</p>
+            <p className="font-black text-lg uppercase tracking-wider mb-2" style={{ color: IC.green }}>Delete All {STORE_LABEL[activeStoreType]} Dispatches?</p>
             <p className="text-sm mb-6" style={{ color: IC.textMuted }}>
-              All {dispatches.length} dispatches will be permanently deleted. This cannot be undone.
+              All {storeDispatches.length} {STORE_LABEL[activeStoreType]} dispatches will be permanently deleted. This cannot be undone.
             </p>
             <div className="space-y-2">
               <button
-                onClick={() => { onClearAllDispatches(); setConfirmClearAll(false) }}
+                onClick={() => { onClearAllDispatches(activeStoreType); setConfirmClearAll(false) }}
                 className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
                 style={{ backgroundColor: '#EF4444' }}
               >Delete All</button>
@@ -1003,17 +1166,15 @@ function ProductCard({
   onUpdateQty,
   onToggleFavorite,
 }: {
-  product: KrogerProduct
+  product: Product
   cartItem: CartItem | undefined
   isFavorite: boolean
-  onAdd: (p: KrogerProduct) => void
+  onAdd: (p: Product) => void
   onUpdateQty: (id: string, qty: number) => void
-  onToggleFavorite: (p: KrogerProduct) => void
+  onToggleFavorite: (p: Product) => void
 }) {
-  const imgUrl = getProductImage(product, 'thumbnail') || getProductImage(product, 'small')
-  const price = getPrice(product)
-  const size = getSize(product)
   const [justAdded, setJustAdded] = useState(false)
+  const outOfStock = product.inStock === false
 
   const handleAdd = () => {
     onAdd(product)
@@ -1048,8 +1209,8 @@ function ProductCard({
             </svg>
           </div>
         )}
-        {imgUrl ? (
-          <img src={imgUrl} alt={product.description} loading="lazy" className="h-28 w-28 object-contain mix-blend-multiply" />
+        {product.image ? (
+          <img src={product.image} alt={product.name} loading="lazy" className={`h-28 w-28 object-contain mix-blend-multiply${outOfStock ? ' opacity-40 grayscale' : ''}`} />
         ) : (
           <div className="w-20 h-20 rounded-xl flex items-center justify-center" style={{ backgroundColor: '#E5DDD0' }}>
             <svg className="w-8 h-8" fill="none" stroke={IC.textMuted} viewBox="0 0 24 24">
@@ -1057,27 +1218,35 @@ function ProductCard({
             </svg>
           </div>
         )}
+        {outOfStock && (
+          <span className="absolute bottom-2 left-2 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-white" style={{ color: '#9B8470', border: '1px solid #E5DDD0' }}>
+            Out of Stock
+          </span>
+        )}
       </div>
 
       <div className="flex flex-col flex-1 px-3 pt-2 pb-3 gap-1">
-        <p className="text-[10px] font-bold uppercase tracking-widest truncate" style={{ color: IC.textMuted }}>{product.brand || ''}</p>
-        <p className="text-sm font-semibold leading-tight line-clamp-2 flex-1" style={{ color: IC.green }}>{product.description}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-widest truncate flex-1" style={{ color: IC.textMuted }}>{product.brand || ''}</p>
+          <StoreTag store={product.store} />
+        </div>
+        <p className="text-sm font-semibold leading-tight line-clamp-2 flex-1" style={{ color: IC.green }}>{product.name}</p>
         <div className="flex items-end justify-between mt-1">
           <div>
-            {size && <p className="text-xs" style={{ color: IC.textMuted }}>{size}</p>}
-            {price > 0 && <p className="text-sm font-black" style={{ color: IC.gold }}>${price.toFixed(2)}</p>}
+            {product.size && <p className="text-xs" style={{ color: IC.textMuted }}>{product.size}</p>}
+            {product.price > 0 && <p className="text-sm font-black" style={{ color: IC.gold }}>${product.price.toFixed(2)}</p>}
           </div>
 
           {cartItem ? (
             <div className="flex items-center gap-1.5">
               <button
-                onClick={() => onUpdateQty(product.productId, cartItem.quantity - 1)}
+                onClick={() => onUpdateQty(product.id, cartItem.quantity - 1)}
                 className="w-8 h-8 rounded-full flex items-center justify-center font-bold active:scale-[0.85] transition-all duration-100 text-lg leading-none"
                 style={{ backgroundColor: '#E5DDD0', color: IC.green }}
               >−</button>
               <span className="w-6 text-center text-sm font-black" style={{ color: IC.green }}>{cartItem.quantity}</span>
               <button
-                onClick={() => onUpdateQty(product.productId, cartItem.quantity + 1)}
+                onClick={() => onUpdateQty(product.id, cartItem.quantity + 1)}
                 disabled={cartItem.quantity >= 20}
                 className="w-8 h-8 rounded-full text-white flex items-center justify-center font-bold active:scale-[0.85] transition-all duration-100 text-lg leading-none disabled:opacity-40"
                 style={{ backgroundColor: IC.green }}
@@ -1086,7 +1255,8 @@ function ProductCard({
           ) : (
             <button
               onClick={handleAdd}
-              className="w-9 h-9 rounded-full text-white flex items-center justify-center transition-all duration-150 shadow-md active:scale-[0.82]"
+              disabled={outOfStock}
+              className="w-9 h-9 rounded-full text-white flex items-center justify-center transition-all duration-150 shadow-md active:scale-[0.82] disabled:opacity-40 disabled:active:scale-100"
               style={{ backgroundColor: justAdded ? IC.gold : IC.green, transform: justAdded ? 'scale(1.1)' : undefined }}
               aria-label="Add to dispatch"
             >
@@ -1110,47 +1280,56 @@ function ProductCard({
 // ── ReplacementPanel ──────────────────────────────────────────────────────────
 
 function ReplacementPanel({
-  forItem, store, history, onSelect, onClose,
+  forItem, krogerLocation, history, onSelect, onClose,
 }: {
   forItem: CartItem
-  store: KrogerLocation
+  krogerLocation: KrogerLocation | null
   history: HistoryItem[]
   onSelect: (r: CartReplacement) => void
   onClose: () => void
 }) {
+  const storeType = forItem.product.store
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<KrogerProduct[]>([])
+  const [results, setResults] = useState<Product[]>([])
   const [searching, setSearching] = useState(false)
 
   const search = useCallback(async (term: string) => {
     if (!term.trim()) { setResults([]); return }
     setSearching(true)
     try {
-      const res = await fetch(`/api/kroger/products?term=${encodeURIComponent(term)}&locationId=${store.locationId}&start=0`)
-      const data = await res.json()
-      setResults(data.products ?? [])
+      if (storeType === 'kroger') {
+        if (!krogerLocation) { setResults([]); return }
+        const res = await fetch(`/api/kroger/products?term=${encodeURIComponent(term)}&locationId=${krogerLocation.locationId}&start=0`)
+        const data = await res.json()
+        setResults(((data.products ?? []) as KrogerProduct[]).map(krogerToProduct))
+      } else {
+        const params = new URLSearchParams({ query: term, country: 'US' })
+        const res = await fetch(`/api/costco/search?${params}`)
+        const data = await res.json()
+        setResults(((data.products ?? []) as CostcoProduct[]).map(costcoToProduct))
+      }
     } catch { /* ignore */ } finally { setSearching(false) }
-  }, [store.locationId])
+  }, [storeType, krogerLocation])
 
   useEffect(() => {
     const t = setTimeout(() => search(query), 500)
     return () => clearTimeout(t)
   }, [query, search])
 
-  const pick = (product: KrogerProduct) => {
+  const pick = (product: Product) => {
     onSelect({
-      productId: product.productId,
-      description: product.description,
+      productId: product.id,
+      description: product.name,
       brand: product.brand || '',
-      img: getProductImage(product, 'small') || getProductImage(product, 'thumbnail'),
-      size: product.items?.[0]?.size ?? '',
-      price: product.items?.[0]?.price?.regular ?? 0,
+      img: product.image,
+      size: product.size,
+      price: product.price,
       quantity: forItem.quantity,
       note: '',
     })
   }
 
-  const filteredHistory = history.filter(h => h.productId !== forItem.product.productId)
+  const filteredHistory = history.filter(h => h.store === storeType && h.productId !== forItem.product.id)
 
   return (
     <div className="fixed inset-0 z-[70] flex flex-col justify-end">
@@ -1161,8 +1340,11 @@ function ReplacementPanel({
         </div>
         <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid #E5DDD0' }}>
           <div>
-            <h3 className="font-black uppercase tracking-wider text-sm" style={{ color: IC.green }}>Choose Substitute</h3>
-            <p className="text-xs truncate max-w-[240px]" style={{ color: IC.textMuted }}>for {forItem.product.description}</p>
+            <div className="flex items-center gap-2">
+              <h3 className="font-black uppercase tracking-wider text-sm" style={{ color: IC.green }}>Choose Substitute</h3>
+              <StoreTag store={storeType} />
+            </div>
+            <p className="text-xs truncate max-w-[240px]" style={{ color: IC.textMuted }}>for {forItem.product.name}</p>
           </div>
           <button onClick={onClose} className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100" style={{ backgroundColor: IC.cream }}>
             <svg className="w-5 h-5" fill="none" stroke={IC.green} viewBox="0 0 24 24">
@@ -1210,17 +1392,17 @@ function ReplacementPanel({
             <div className="grid grid-cols-2 gap-2">
               {results.map(p => (
                 <button
-                  key={p.productId}
+                  key={p.id}
                   onClick={() => pick(p)}
                   className="rounded-2xl p-2 text-left active:scale-95 transition-all duration-100"
                   style={{ backgroundColor: IC.cream, border: `1px solid #E5DDD0` }}
                 >
-                  {getProductImage(p, 'thumbnail') && (
-                    <img src={getProductImage(p, 'thumbnail')} alt={p.description} className="w-14 h-14 object-contain mx-auto mb-1" />
+                  {p.image && (
+                    <img src={p.image} alt={p.name} className="w-14 h-14 object-contain mx-auto mb-1" />
                   )}
-                  <p className="text-xs font-semibold leading-tight line-clamp-2" style={{ color: IC.green }}>{p.description}</p>
-                  <p className="text-xs" style={{ color: IC.textMuted }}>{p.items?.[0]?.size}</p>
-                  {getPrice(p) > 0 && <p className="text-xs font-bold" style={{ color: IC.gold }}>${getPrice(p).toFixed(2)}</p>}
+                  <p className="text-xs font-semibold leading-tight line-clamp-2" style={{ color: IC.green }}>{p.name}</p>
+                  <p className="text-xs" style={{ color: IC.textMuted }}>{p.size}</p>
+                  {p.price > 0 && <p className="text-xs font-bold" style={{ color: IC.gold }}>${p.price.toFixed(2)}</p>}
                 </button>
               ))}
             </div>
@@ -1256,19 +1438,22 @@ function CartPanel({
   onSetTip: (tip: number) => void
   liveCheckedItems?: string[]
 }) {
-  const cartTotal = dispatch.cart.reduce((sum, item) => sum + getPrice(item.product) * item.quantity, 0)
+  const cartTotal = dispatch.cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0)
   const autoTip = Math.min(20, dispatch.cart.reduce((n, i) => n + i.quantity, 0))
   const tip = dispatch.tip ?? autoTip
 
   return (
     <>
       <div className="fixed inset-0 bg-black/50 z-40 md:hidden backdrop-blur-sm" onClick={onClose} />
-      <aside className="fixed z-50 bottom-0 left-0 right-0 md:right-0 md:top-0 md:left-auto md:bottom-0 md:w-96 bg-white shadow-2xl flex flex-col rounded-t-3xl md:rounded-none max-h-[90vh] md:max-h-none">
+      <aside className="fixed z-50 bottom-0 left-0 right-0 md:right-0 md:top-0 md:left-auto md:bottom-0 md:w-96 bg-white shadow-2xl flex flex-col rounded-t-3xl md:rounded-none max-h-[90vh] md:max-h-none" style={{ borderTop: `3px solid ${STORE_ACCENT[dispatch.store]}` }}>
         <div className="md:hidden flex justify-center pt-3 pb-0">
           <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
         </div>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid #E5DDD0` }}>
           <div className="flex-1 min-w-0 mr-2">
+            <div className="flex items-center gap-2 mb-0.5">
+              <StoreTag store={dispatch.store} />
+            </div>
             <input
               value={dispatch.name}
               onChange={(e) => onRename(e.target.value)}
@@ -1315,40 +1500,47 @@ function CartPanel({
             </div>
           )}
           {dispatch.cart.map((item) => {
-            const imgUrl = getProductImage(item.product, 'thumbnail')
-            const price = getPrice(item.product)
-            const isCollected = liveCheckedItems?.includes(item.product.productId)
+            const isCollected = liveCheckedItems?.includes(item.product.id)
             return (
-              <div key={item.product.productId} className="rounded-2xl p-3" style={{ backgroundColor: isCollected ? `${IC.green}08` : IC.cream, border: isCollected ? `1px solid ${IC.green}30` : '1px solid #E5DDD0' }}>
+              <div key={item.product.id} className="rounded-2xl p-3" style={{ backgroundColor: isCollected ? `${IC.green}08` : IC.cream, border: isCollected ? `1px solid ${IC.green}30` : '1px solid #E5DDD0' }}>
                 <div className="flex gap-3">
-                  {imgUrl && (
-                    <img src={imgUrl} alt={item.product.description} loading="lazy" className={`w-14 h-14 object-contain flex-shrink-0${isCollected ? ' opacity-50' : ''}`} />
+                  {item.product.image && (
+                    <img src={item.product.image} alt={item.product.name} loading="lazy" className={`w-14 h-14 object-contain flex-shrink-0${isCollected ? ' opacity-50' : ''}`} />
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start gap-1.5 flex-wrap">
-                      <p className={`text-sm font-bold leading-tight${isCollected ? ' line-through opacity-60' : ''}`} style={{ color: IC.green }}>{item.product.description}</p>
+                      <p className={`text-sm font-bold leading-tight${isCollected ? ' line-through opacity-60' : ''}`} style={{ color: IC.green }}>{item.product.name}</p>
                       {isCollected && (
                         <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: `${IC.green}20`, color: IC.green }}>✓ Collected</span>
                       )}
+                      {item.restockStatus && (
+                        <span
+                          className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0"
+                          style={{
+                            backgroundColor: `${STATUS_CONFIG[item.restockStatus].color}20`,
+                            color: STATUS_CONFIG[item.restockStatus].color,
+                          }}
+                        >{STATUS_CONFIG[item.restockStatus].emoji} {STATUS_CONFIG[item.restockStatus].label}</span>
+                      )}
                     </div>
-                    {price > 0 && (
-                      <p className="text-xs font-black mt-0.5" style={{ color: IC.gold }}>${(price * item.quantity).toFixed(2)}</p>
+                    {item.product.price > 0 && (
+                      <p className="text-xs font-black mt-0.5" style={{ color: IC.gold }}>${(item.product.price * item.quantity).toFixed(2)}</p>
                     )}
                     <div className="flex items-center gap-1.5 mt-2">
                       <button
-                        onClick={() => onUpdateQty(item.product.productId, item.quantity - 1)}
+                        onClick={() => onUpdateQty(item.product.id, item.quantity - 1)}
                         className="w-7 h-7 rounded-full bg-white flex items-center justify-center font-bold active:scale-[0.85] transition-all duration-100 text-base leading-none"
                         style={{ border: `1px solid #E5DDD0`, color: IC.green }}
                       >−</button>
                       <span className="w-6 text-center text-sm font-black" style={{ color: IC.green }}>{item.quantity}</span>
                       <button
-                        onClick={() => onUpdateQty(item.product.productId, item.quantity + 1)}
+                        onClick={() => onUpdateQty(item.product.id, item.quantity + 1)}
                         disabled={item.quantity >= 20}
                         className="w-7 h-7 rounded-full text-white flex items-center justify-center font-bold active:scale-[0.85] transition-all duration-100 text-base leading-none disabled:opacity-40"
                         style={{ backgroundColor: IC.green }}
                       >+</button>
                       <button
-                        onClick={() => onRemove(item.product.productId)}
+                        onClick={() => onRemove(item.product.id)}
                         className="ml-auto w-7 h-7 rounded-full bg-white flex items-center justify-center active:scale-[0.85] transition-all duration-100"
                         style={{ border: '1px solid #E5DDD0' }}
                       >
@@ -1362,7 +1554,7 @@ function CartPanel({
                 <input
                   type="text"
                   value={item.note}
-                  onChange={(e) => onUpdateNote(item.product.productId, e.target.value)}
+                  onChange={(e) => onUpdateNote(item.product.id, e.target.value)}
                   placeholder="Add a note..."
                   className="mt-2 w-full text-[16px] bg-white rounded-xl px-3 py-1.5 focus:outline-none placeholder:text-stone-300 transition-shadow"
                   style={{ border: '1px solid #E5DDD0', color: IC.green }}
@@ -1378,13 +1570,13 @@ function CartPanel({
                       {item.replacement.price > 0 && <p className="text-xs font-bold" style={{ color: IC.gold }}>${item.replacement.price.toFixed(2)}</p>}
                     </div>
                     <button
-                      onClick={() => onRemoveReplacement(item.product.productId)}
+                      onClick={() => onRemoveReplacement(item.product.id)}
                       className="text-xs text-red-400 hover:text-red-600 flex-shrink-0 active:scale-90 transition-all duration-100 font-medium"
                     >Remove</button>
                   </div>
                 ) : (
                   <button
-                    onClick={() => onAddReplacement(item.product.productId)}
+                    onClick={() => onAddReplacement(item.product.id)}
                     className="mt-2 text-xs font-bold active:scale-95 transition-all duration-100"
                     style={{ color: IC.gold }}
                   >+ Add substitute</button>
@@ -1448,7 +1640,7 @@ function CartPanel({
             className="w-full text-white font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] text-sm tracking-widest uppercase disabled:opacity-40"
             style={{ backgroundColor: IC.green }}
           >
-            {dispatch.cart.length === 0 ? 'Add items to dispatch' : 'Send Dispatch →'}
+            {dispatch.cart.length === 0 ? 'Add items to dispatch' : `Send ${STORE_LABEL[dispatch.store]} Dispatch →`}
           </button>
         </div>
       </aside>
@@ -1594,6 +1786,690 @@ function AddShopperModal({ onAdd, onClose }: {
   )
 }
 
+// ── CustomItemModal ───────────────────────────────────────────────────────────
+// Fallback for when Costco search doesn't have what the user's looking for —
+// lets them add a freeform line item straight into the Costco dispatch cart.
+
+function CustomItemModal({ initialName, onAdd, onClose }: {
+  initialName: string
+  onAdd: (name: string, note: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(initialName)
+  const [note, setNote] = useState('')
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    onAdd(name.trim(), note.trim())
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-7">
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+          style={{ backgroundColor: IC.cream }}
+        >
+          <svg className="w-4 h-4" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <div className="flex items-center gap-2 mb-1">
+          <h3 className="text-xl font-black uppercase tracking-widest" style={{ color: IC.green }}>Custom Item</h3>
+          <StoreTag store="costco" />
+        </div>
+        <p className="text-sm mb-6" style={{ color: IC.textMuted }}>
+          Not in search results? Add it anyway — your shopper will look for it in the warehouse.
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Item name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. Kirkland paper towels"
+              autoFocus
+              className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+              style={{ border: `2px solid #E5DDD0`, color: IC.green }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.costco)}
+              onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>
+              Note <span className="normal-case font-normal">(quantity, size, brand — optional)</span>
+            </label>
+            <input
+              type="text"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="e.g. 2 packs, any brand is fine"
+              className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+              style={{ border: `2px solid #E5DDD0`, color: IC.green }}
+              onFocus={e => (e.currentTarget.style.borderColor = IC.costco)}
+              onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={!name.trim()}
+            className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
+            style={{ backgroundColor: IC.costco }}
+          >
+            + Add to Costco Dispatch
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ── PantryItemRow ─────────────────────────────────────────────────────────────
+
+function PantryItemRow({ item, onSetStatus }: {
+  item: InventoryItem
+  onSetStatus: (item: InventoryItem, status: InventoryStatus) => void
+}) {
+  return (
+    <li className="bg-white rounded-2xl p-3 flex items-center gap-3" style={{ border: '1px solid #E5DDD0' }}>
+      {item.image_url ? (
+        <img src={item.image_url} alt={item.name} loading="lazy" className="w-14 h-14 object-contain flex-shrink-0" />
+      ) : (
+        <div className="w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: IC.cream }}>
+          <svg className="w-6 h-6" fill="none" stroke={IC.textMuted} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+          </svg>
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        {item.brand && <p className="text-[10px] font-bold uppercase tracking-widest truncate" style={{ color: IC.textMuted }}>{item.brand}</p>}
+        <p className="text-sm font-semibold leading-tight truncate" style={{ color: IC.green }}>{item.name}</p>
+        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+          {item.store !== 'other' && <StoreTag store={item.store} />}
+          <span className="text-[10px]" style={{ color: IC.textMuted }}>Restocked {timeAgo(item.last_restocked_at)}</span>
+        </div>
+      </div>
+      <div className="flex gap-1 flex-shrink-0">
+        {(Object.keys(STATUS_CONFIG) as InventoryStatus[]).map(s => {
+          const cfg = STATUS_CONFIG[s]
+          const active = item.status === s
+          return (
+            <button
+              key={s}
+              onClick={() => onSetStatus(item, s)}
+              className="w-9 h-9 rounded-full flex items-center justify-center text-base transition-all duration-150 active:scale-90"
+              style={{
+                backgroundColor: active ? `${cfg.color}20` : IC.cream,
+                border: active ? `2px solid ${cfg.color}` : '1px solid transparent',
+              }}
+              aria-label={cfg.label}
+              title={cfg.label}
+            >{cfg.emoji}</button>
+          )
+        })}
+      </div>
+    </li>
+  )
+}
+
+// ── PantryView ────────────────────────────────────────────────────────────────
+
+function PantryView({ items, loading, error, onClose, onSetStatus, onAddItem }: {
+  items: InventoryItem[]
+  loading: boolean
+  error: string
+  onClose: () => void
+  onSetStatus: (item: InventoryItem, status: InventoryStatus) => void
+  onAddItem: () => void
+}) {
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | InventoryStatus>('all')
+
+  const filtered = items.filter(i =>
+    (statusFilter === 'all' || i.status === statusFilter) &&
+    i.name.toLowerCase().includes(search.trim().toLowerCase())
+  )
+
+  const counts = {
+    all: items.length,
+    in_stock: items.filter(i => i.status === 'in_stock').length,
+    running_low: items.filter(i => i.status === 'running_low').length,
+    out_of_stock: items.filter(i => i.status === 'out_of_stock').length,
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
+      <header className="sticky top-0 z-30 shadow-lg" style={{ backgroundColor: IC.green }}>
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-2.5">
+          <button onClick={onClose} className="flex items-center gap-1 active:opacity-70 transition-opacity" aria-label="Back to home">
+            <svg className="w-4 h-4" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <div className="flex-1 min-w-0">
+            <span className="font-black text-white tracking-[0.12em] uppercase text-base leading-none block">Family Pantry</span>
+            <span className="text-[9px] font-bold tracking-[0.3em] uppercase leading-none block" style={{ color: IC.gold }}>Shared Inventory</span>
+          </div>
+          <button
+            onClick={onAddItem}
+            className="flex items-center gap-1.5 rounded-full px-3.5 py-2 active:scale-95 transition-all duration-100 flex-shrink-0"
+            style={{ backgroundColor: IC.gold, color: IC.green }}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+            </svg>
+            <span className="text-xs font-black uppercase tracking-wider">Add Item</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="px-4 py-4 max-w-3xl mx-auto w-full space-y-3">
+        <div className="relative">
+          <svg className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search pantry..."
+            className="w-full rounded-2xl pl-11 pr-4 py-3 text-base focus:outline-none bg-white"
+            style={{ border: '2px solid #E5DDD0', color: IC.green }}
+            onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+            onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+          />
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {([
+            { key: 'all' as const, label: 'All' },
+            { key: 'in_stock' as const, label: `${STATUS_CONFIG.in_stock.emoji} In Stock` },
+            { key: 'running_low' as const, label: `${STATUS_CONFIG.running_low.emoji} Running Low` },
+            { key: 'out_of_stock' as const, label: `${STATUS_CONFIG.out_of_stock.emoji} Out of Stock` },
+          ]).map(({ key, label }) => {
+            const active = statusFilter === key
+            return (
+              <button
+                key={key}
+                onClick={() => setStatusFilter(key)}
+                className="flex-shrink-0 flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-all duration-150 active:scale-95"
+                style={{
+                  backgroundColor: active ? IC.green : 'white',
+                  color: active ? 'white' : IC.green,
+                  border: active ? 'none' : '1px solid #E5DDD0',
+                }}
+              >
+                {label}
+                <span className="text-xs font-black rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0"
+                  style={{ backgroundColor: active ? IC.gold : IC.cream, color: active ? IC.green : IC.textMuted }}>
+                  {counts[key]}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <main className="flex-1 max-w-3xl mx-auto w-full px-4 pb-8">
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-600 rounded-2xl px-4 py-3 text-sm font-medium">{error}</div>
+        )}
+
+        {loading && !error && (
+          <div className="flex flex-col items-center justify-center py-24 gap-4">
+            <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+            <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Loading pantry…</p>
+          </div>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
+            <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>
+              {items.length === 0 ? 'Pantry Is Empty' : 'No Matches'}
+            </p>
+            <p className="text-sm mt-2" style={{ color: IC.textMuted }}>
+              {items.length === 0 ? 'Put away a delivered dispatch, or tap Add Item to start tracking it here' : 'Try a different search or filter'}
+            </p>
+          </div>
+        )}
+
+        {filtered.length > 0 && (
+          <ul className="space-y-2">
+            {filtered.map(item => (
+              <PantryItemRow key={item.id} item={item} onSetStatus={onSetStatus} />
+            ))}
+          </ul>
+        )}
+      </main>
+    </div>
+  )
+}
+
+// ── PutAwayModal ──────────────────────────────────────────────────────────────
+
+function PutAwayModal({ dispatch, onDone, onClose }: {
+  dispatch: Dispatch
+  onDone: (items: CartItem[]) => Promise<void>
+  onClose: () => void
+}) {
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [saving, setSaving] = useState(false)
+
+  const toggle = (id: string) => setChecked(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+
+  const allChecked = checked.size === dispatch.cart.length && dispatch.cart.length > 0
+
+  const handleSave = async () => {
+    if (checked.size === 0) return
+    setSaving(true)
+    try {
+      await onDone(dispatch.cart.filter(i => checked.has(i.product.id)))
+      onClose()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-t-3xl shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
+        </div>
+        <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid #E5DDD0' }}>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-black uppercase tracking-wider text-sm" style={{ color: IC.green }}>Put Away Groceries</h3>
+              <StoreTag store={dispatch.store} />
+            </div>
+            <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>Check off items as you unpack them</p>
+          </div>
+          <button
+            onClick={() => setChecked(allChecked ? new Set() : new Set(dispatch.cart.map(i => i.product.id)))}
+            className="text-xs font-bold flex-shrink-0 active:scale-95 transition-all duration-100"
+            style={{ color: IC.gold }}
+          >{allChecked ? 'Clear all' : 'Check all'}</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+          {dispatch.cart.map(item => {
+            const isChecked = checked.has(item.product.id)
+            return (
+              <button
+                key={item.product.id}
+                onClick={() => toggle(item.product.id)}
+                className="w-full flex items-center gap-3 rounded-2xl p-3 text-left transition-all duration-150 active:scale-[0.99]"
+                style={{ backgroundColor: isChecked ? `${IC.green}08` : IC.cream, border: isChecked ? `1px solid ${IC.green}30` : '1px solid #E5DDD0' }}
+              >
+                <span
+                  className="flex-shrink-0 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all duration-200"
+                  style={{ backgroundColor: isChecked ? IC.green : 'white', borderColor: isChecked ? IC.green : '#C8BFB0' }}
+                >
+                  {isChecked && (
+                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </span>
+                {item.product.image && (
+                  <img src={item.product.image} alt={item.product.name} loading="lazy" className="w-12 h-12 object-contain flex-shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-bold leading-tight${isChecked ? ' line-through opacity-60' : ''}`} style={{ color: IC.green }}>{item.product.name}</p>
+                  <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>{item.product.brand} {item.quantity > 1 ? `· ×${item.quantity}` : ''}</p>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="px-5 py-5 bg-white" style={{ borderTop: '1px solid #E5DDD0' }}>
+          <button
+            onClick={handleSave}
+            disabled={checked.size === 0 || saving}
+            className="w-full text-white font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] text-sm tracking-widest uppercase disabled:opacity-40"
+            style={{ backgroundColor: IC.green }}
+          >
+            {saving ? 'Saving…' : checked.size === 0 ? 'Check off items to put away' : `Put Away ${checked.size} Item${checked.size !== 1 ? 's' : ''} →`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── BarcodeScannerModal ──────────────────────────────────────────────────────
+// Lazy-loads html5-qrcode entirely inside the effect (never at module scope)
+// so a browser-only camera/DOM library can never run during SSR.
+
+const BARCODE_VIEWPORT_ID = 'ic-barcode-scanner-viewport'
+
+function BarcodeScannerModal({ onDetected, onClose }: {
+  onDetected: (code: string) => void
+  onClose: () => void
+}) {
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
+  const [starting, setStarting] = useState(true)
+  const [error, setError] = useState('')
+  const detectedRef = useRef(false)
+  const onDetectedRef = useRef(onDetected)
+  useEffect(() => { onDetectedRef.current = onDetected })
+
+  useEffect(() => {
+    let cancelled = false
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Html5Qrcode instance, typed loosely since it's dynamically imported
+    let scannerInstance: any = null
+    detectedRef.current = false
+
+    ;(async () => {
+      setStarting(true)
+      setError('')
+      try {
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode')
+        if (cancelled) return
+        scannerInstance = new Html5Qrcode(BARCODE_VIEWPORT_ID, {
+          formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.UPC_A],
+          verbose: false,
+        })
+        await scannerInstance.start(
+          { facingMode },
+          { fps: 10, qrbox: { width: 270, height: 150 } },
+          (decodedText: string) => {
+            if (detectedRef.current) return
+            detectedRef.current = true
+            onDetectedRef.current(decodedText)
+          },
+          () => { /* per-frame "no barcode in view" — fires continuously, not an error */ }
+        )
+        if (cancelled) {
+          scannerInstance.stop().then(() => scannerInstance.clear()).catch(() => {})
+          return
+        }
+        setStarting(false)
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Could not access the camera. Check permissions and try again.')
+          setStarting(false)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      if (scannerInstance) {
+        scannerInstance.stop().then(() => scannerInstance.clear()).catch(() => {})
+      }
+    }
+  }, [facingMode])
+
+  return (
+    <div className="fixed inset-0 z-[80] flex flex-col" style={{ backgroundColor: '#0A0A0A' }}>
+      <div className="flex items-center justify-between px-5 py-4">
+        <div>
+          <p className="text-white font-black uppercase tracking-widest text-sm">Scan Barcode</p>
+          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>Hold steady over a UPC-A or EAN-13 barcode</p>
+        </div>
+        <button
+          onClick={onClose}
+          className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100 flex-shrink-0"
+          style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}
+          aria-label="Close scanner"
+        >
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="flex-1 relative flex items-center justify-center px-4">
+        <div id={BARCODE_VIEWPORT_ID} className="w-full max-w-md rounded-2xl overflow-hidden" />
+        {starting && !error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
+            <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+            <p className="text-sm font-medium text-white">Starting camera…</p>
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
+            <p className="text-sm font-medium text-white">{error}</p>
+            <button onClick={onClose} className="mt-2 px-5 py-2.5 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150" style={{ backgroundColor: IC.gold, color: IC.green }}>Close</button>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-center gap-3 px-5 py-6">
+        <button
+          onClick={() => setFacingMode(f => f === 'environment' ? 'user' : 'environment')}
+          className="flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
+          style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
+        >🔄 Flip Camera</button>
+        <button
+          onClick={onClose}
+          className="px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
+          style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
+        >Cancel</button>
+      </div>
+    </div>
+  )
+}
+
+// ── AddPantryItemModal ───────────────────────────────────────────────────────
+
+function playBarcodeNotFoundTone() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const ctx = new AudioCtx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 420
+    gain.gain.value = 0.15
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.2)
+    osc.onended = () => ctx.close()
+  } catch { /* non-critical UX affordance — ignore if Web Audio isn't available */ }
+}
+
+const PANTRY_STORE_OPTIONS: { key: InventoryStore; label: string; color: string }[] = [
+  { key: 'kroger', label: 'Kroger', color: IC.kroger },
+  { key: 'costco', label: 'Costco', color: IC.costco },
+  { key: 'other', label: 'Other', color: IC.textMuted },
+]
+
+function AddPantryItemModal({ onSave, onClose }: {
+  onSave: (input: { name: string; brand: string; imageUrl: string; store: InventoryStore; barcode: string }) => Promise<void>
+  onClose: () => void
+}) {
+  const [name, setName] = useState('')
+  const [brand, setBrand] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
+  const [store, setStore] = useState<InventoryStore>('other')
+  const [barcode, setBarcode] = useState('')
+  const [scannerOpen, setScannerOpen] = useState(false)
+  const [lookupLoading, setLookupLoading] = useState(false)
+  const [lookupNotice, setLookupNotice] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const handleDetected = useCallback((code: string) => {
+    setScannerOpen(false)
+    setBarcode(code)
+    setLookupLoading(true)
+    setLookupNotice('')
+    lookupBarcode(code)
+      .then(result => {
+        if (result.found) {
+          if (result.name) setName(result.name)
+          if (result.brand) setBrand(result.brand)
+          if (result.imageUrl) setImageUrl(result.imageUrl)
+          setLookupNotice(`✓ Found "${result.name ?? 'product'}" — review the details below and save`)
+        } else {
+          playBarcodeNotFoundTone()
+          setLookupNotice(`No match for barcode ${code} in Open Food Facts — enter the details manually`)
+        }
+      })
+      .catch((e: unknown) => {
+        playBarcodeNotFoundTone()
+        setLookupNotice(e instanceof Error ? e.message : 'Lookup failed — enter the details manually')
+      })
+      .finally(() => setLookupLoading(false))
+  }, [])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim() || saving) return
+    setSaving(true)
+    setSaveError('')
+    try {
+      await onSave({ name: name.trim(), brand: brand.trim(), imageUrl: imageUrl.trim(), store, barcode: barcode.trim() })
+      onClose()
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Failed to save item')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+        <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md p-7 max-h-[92vh] overflow-y-auto">
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+            style={{ backgroundColor: IC.cream }}
+          >
+            <svg className="w-4 h-4" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+
+          <h3 className="text-xl font-black uppercase tracking-widest mb-1" style={{ color: IC.green }}>Add Pantry Item</h3>
+          <p className="text-sm mb-5" style={{ color: IC.textMuted }}>Scan a barcode to auto-fill, or enter the details yourself.</p>
+
+          <button
+            type="button"
+            onClick={() => setScannerOpen(true)}
+            className="w-full mb-4 py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] flex items-center justify-center gap-2"
+            style={{ backgroundColor: IC.green, color: 'white' }}
+          >📷 Scan Barcode</button>
+
+          {lookupLoading && (
+            <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-2xl" style={{ backgroundColor: IC.cream }}>
+              <span className="inline-block w-4 h-4 border-2 border-t-transparent rounded-full animate-spin flex-shrink-0" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+              <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Looking up barcode…</p>
+            </div>
+          )}
+          {lookupNotice && !lookupLoading && (
+            <div className="mb-4 px-4 py-3 rounded-2xl text-sm font-medium" style={{ backgroundColor: `${IC.gold}15`, color: IC.greenMid }}>
+              {lookupNotice}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-3">
+            {barcode && (
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: IC.textMuted }}>
+                Barcode <span className="font-mono normal-case">{barcode}</span>
+              </p>
+            )}
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="e.g. Kirkland Signature Coffee"
+                className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+                style={{ border: '2px solid #E5DDD0', color: IC.green }}
+                onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+                onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Brand <span className="normal-case font-normal">(optional)</span></label>
+              <input
+                type="text"
+                value={brand}
+                onChange={e => setBrand(e.target.value)}
+                placeholder="e.g. Kirkland Signature"
+                className="w-full rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+                style={{ border: '2px solid #E5DDD0', color: IC.green }}
+                onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+                onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Image URL <span className="normal-case font-normal">(optional)</span></label>
+              <div className="flex items-center gap-2">
+                {imageUrl && <img src={imageUrl} alt="" className="w-11 h-11 object-contain rounded-lg flex-shrink-0" style={{ backgroundColor: IC.cream }} />}
+                <input
+                  type="text"
+                  value={imageUrl}
+                  onChange={e => setImageUrl(e.target.value)}
+                  placeholder="https://..."
+                  className="flex-1 min-w-0 rounded-2xl px-4 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
+                  style={{ border: '2px solid #E5DDD0', color: IC.green }}
+                  onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
+                  onBlur={e => (e.currentTarget.style.borderColor = '#E5DDD0')}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-[0.3em] mb-1 block" style={{ color: IC.textMuted }}>Store</label>
+              <div className="flex gap-2">
+                {PANTRY_STORE_OPTIONS.map(opt => {
+                  const active = store === opt.key
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setStore(opt.key)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest transition-all duration-150 active:scale-[0.97]"
+                      style={{
+                        backgroundColor: active ? `${opt.color}18` : IC.cream,
+                        color: active ? opt.color : IC.textMuted,
+                        border: active ? `2px solid ${opt.color}` : '1px solid transparent',
+                      }}
+                    >{opt.label}</button>
+                  )
+                })}
+              </div>
+            </div>
+            {saveError && <p className="text-sm font-medium" style={{ color: '#e53935' }}>{saveError}</p>}
+            <button
+              type="submit"
+              disabled={!name.trim() || saving}
+              className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase text-white transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
+              style={{ backgroundColor: IC.green }}
+            >
+              {saving ? 'Saving…' : '+ Add to Pantry'}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {scannerOpen && (
+        <BarcodeScannerModal onDetected={handleDetected} onClose={() => setScannerOpen(false)} />
+      )}
+    </>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ShoppingApp() {
@@ -1611,45 +2487,57 @@ export default function ShoppingApp() {
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
 
   const [store, setStore] = useState<KrogerLocation | null>(null)
+  const [activeStoreType, setActiveStoreType] = useState<StoreType>('kroger')
   const [shoppingActive, setShoppingActive] = useState(false)
   const [locationResults, setLocationResults] = useState<KrogerLocation[]>([])
   const [locationLoading, setLocationLoading] = useState(false)
   const [locationError, setLocationError] = useState('')
 
   const [searchQuery, setSearchQuery] = useState('')
-  const [products, setProducts] = useState<KrogerProduct[]>([])
+  const [products, setProducts] = useState<Product[]>([])
   const [searchTotal, setSearchTotal] = useState(0)
   const [searchStart, setSearchStart] = useState(0)
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
 
-  const [dispatches, setDispatches] = useState<Dispatch[]>([{ id: 'dispatch-1', name: 'Dispatch 1', cart: [], note: '' }])
+  const [dispatches, setDispatches] = useState<Dispatch[]>([{ id: 'dispatch-1', name: 'Kroger Dispatch 1', store: 'kroger', cart: [], note: '' }])
   const [activeDispatchId, setActiveDispatchId] = useState<string>('dispatch-1')
   const [cartOpen, setCartOpen] = useState(false)
-  const dispatchCounter = useRef(2)
+  const dispatchCounters = useRef<Record<StoreType, number>>({ kroger: 2, costco: 2 })
 
   const [shoppers, setShoppers] = useState<Shopper[]>([])
   const [shopperPickerOpen, setShopperPickerOpen] = useState(false)
   const [sendingShopper, setSendingShopper] = useState(false)
-  const [liveProgress, setLiveProgress] = useState<Record<string, { checked: number; total: number; checkedItems: string[] }>>({})
+  const [liveProgress, setLiveProgress] = useState<Record<string, { checked: number; total: number; checkedItems: string[]; status: LiveDispatch['status'] }>>({})
 
   const [replacingForId, setReplacingForId] = useState<string | null>(null)
   const [purchaseHistory, setPurchaseHistory] = useState<HistoryItem[]>([])
   const [favorites, setFavorites] = useState<HistoryItem[]>([])
   const [activeTab, setActiveTab] = useState<'favorites' | 'recent'>('favorites')
+  const [customItemOpen, setCustomItemOpen] = useState(false)
+
+  const [pantryOpen, setPantryOpen] = useState(false)
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
+  const [inventoryLoading, setInventoryLoading] = useState(true)
+  const [inventoryError, setInventoryError] = useState('')
+  const [putAwayDispatchId, setPutAwayDispatchId] = useState<string | null>(null)
+  const [addPantryItemOpen, setAddPantryItemOpen] = useState(false)
 
   // Load persisted data on mount + check family session
   useEffect(() => {
     setPurchaseHistory(loadHistory())
     setFavorites(loadFavorites())
     const savedStore = loadStore()
+    const savedStoreType = loadStoreType()
     const savedDispatches = loadDispatches()
-    const savedCounter = loadCounter()
+    const savedCounters = loadCounters()
     if (savedStore) setStore(savedStore)
+    setActiveStoreType(savedStoreType)
+    dispatchCounters.current = savedCounters
     if (savedDispatches && savedDispatches.length > 0) {
       setDispatches(savedDispatches)
-      setActiveDispatchId(savedDispatches[0].id)
-      dispatchCounter.current = savedCounter
+      const forActiveType = savedDispatches.find(d => d.store === savedStoreType)
+      setActiveDispatchId((forActiveType ?? savedDispatches[0]).id)
     }
     // Check family session
     const fid = localStorage.getItem(FAMILY_ID_KEY)
@@ -1757,21 +2645,54 @@ export default function ShoppingApp() {
     setShoppingActive(false)
   }, [])
 
+  const changeStoreType = useCallback((type: StoreType) => {
+    setActiveStoreType(type)
+    saveStoreType(type)
+    setDispatches(prev => {
+      const existing = prev.find(d => d.store === type)
+      if (existing) {
+        setActiveDispatchId(existing.id)
+        return prev
+      }
+      const n = dispatchCounters.current[type]++
+      saveCounters(dispatchCounters.current)
+      const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[type]} Dispatch ${n}`, store: type, cart: [], note: '' }
+      setActiveDispatchId(fresh.id)
+      return [...prev, fresh]
+    })
+    setShoppingActive(false)
+    setSearchQuery(''); setProducts([]); setSearchStart(0); setSearchTotal(0)
+  }, [])
+
   const runSearch = useCallback(async (term: string, start: number) => {
-    if (!store || !term.trim()) return
+    if (!term.trim()) return
+    if (activeStoreType === 'kroger' && !store) return
     setIsSearching(true); setSearchError('')
     if (start === 0) setProducts([])
     try {
-      const params = new URLSearchParams({ term: term.trim(), locationId: store.locationId, start: String(start) })
-      const res = await fetch(`/api/kroger/products?${params}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Search failed')
-      setProducts((prev) => (start === 0 ? data.products : [...prev, ...data.products]))
-      setSearchTotal(data.total); setSearchStart(start)
+      let normalized: Product[]
+      let total: number
+      if (activeStoreType === 'kroger') {
+        const params = new URLSearchParams({ term: term.trim(), locationId: store!.locationId, start: String(start) })
+        const res = await fetch(`/api/kroger/products?${params}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Search failed')
+        normalized = (data.products as KrogerProduct[]).map(krogerToProduct)
+        total = data.total
+      } else {
+        const params = new URLSearchParams({ query: term.trim(), country: 'US', start: String(start) })
+        const res = await fetch(`/api/costco/search?${params}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Search failed')
+        normalized = (data.products as CostcoProduct[]).map(costcoToProduct)
+        total = data.total
+      }
+      setProducts((prev) => (start === 0 ? normalized : [...prev, ...normalized]))
+      setSearchTotal(total); setSearchStart(start)
     } catch (e: unknown) {
       setSearchError(e instanceof Error ? e.message : 'Search failed')
     } finally { setIsSearching(false) }
-  }, [store])
+  }, [store, activeStoreType])
 
   const handleSearch = useCallback(() => { runSearch(searchQuery, 0) }, [runSearch, searchQuery])
 
@@ -1789,83 +2710,180 @@ export default function ShoppingApp() {
     setDispatches(prev => prev.map(d => d.id === activeDispatchId ? updater(d) : d))
   }, [activeDispatchId])
 
-  const addToCart = useCallback((product: KrogerProduct) => {
+  const addToCart = useCallback((product: Product) => {
     updateActiveDispatch(d => {
-      const existing = d.cart.find(i => i.product.productId === product.productId)
+      const existing = d.cart.find(i => i.product.id === product.id)
       return {
         ...d,
         cart: existing
-          ? d.cart.map(i => i.product.productId === product.productId ? { ...i, quantity: Math.min(i.quantity + 1, 20) } : i)
+          ? d.cart.map(i => i.product.id === product.id ? { ...i, quantity: Math.min(i.quantity + 1, 20) } : i)
           : [...d.cart, { product, quantity: 1, note: '' }],
       }
     })
   }, [updateActiveDispatch])
 
+  const addCustomItem = useCallback((name: string, note: string) => {
+    const product: Product = {
+      id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      store: 'costco',
+      name,
+      brand: '',
+      image: '',
+      price: 0,
+      size: '',
+    }
+    updateActiveDispatch(d => ({ ...d, cart: [...d.cart, { product, quantity: 1, note }] }))
+  }, [updateActiveDispatch])
+
+  // Auto-Dispatch Restock Trigger: finds (or creates) the active draft
+  // dispatch for the item's store and upserts a tagged line item into it —
+  // independent of whichever dispatch/tab the user currently has open.
+  const upsertRestockItem = useCallback((storeType: StoreType, product: Product, restockStatus: 'running_low' | 'out_of_stock') => {
+    setDispatches(prev => {
+      let next = prev
+      let target = next.find(d => d.store === storeType && !d.firestoreId)
+      if (!target) {
+        const n = dispatchCounters.current[storeType]++
+        saveCounters(dispatchCounters.current)
+        target = { id: `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: `${STORE_LABEL[storeType]} Dispatch ${n}`, store: storeType, cart: [], note: '' }
+        next = [...next, target]
+      }
+      const targetId = target.id
+      return next.map(d => {
+        if (d.id !== targetId) return d
+        const existing = d.cart.find(i => i.product.id === product.id)
+        return {
+          ...d,
+          cart: existing
+            ? d.cart.map(i => i.product.id === product.id ? { ...i, restockStatus } : i)
+            : [...d.cart, { product, quantity: 1, note: '', restockStatus }],
+        }
+      })
+    })
+  }, [])
+
+  const handleSetInventoryStatus = useCallback(async (item: InventoryItem, status: InventoryStatus) => {
+    try {
+      await updateInventoryStatus(item.id, status)
+      if ((status === 'running_low' || status === 'out_of_stock') && (item.store === 'kroger' || item.store === 'costco')) {
+        const product: Product = {
+          id: item.original_product_id || item.id,
+          store: item.store,
+          name: item.name,
+          brand: item.brand || '',
+          image: item.image_url || '',
+          price: item.unit_price || 0,
+          size: '',
+        }
+        upsertRestockItem(item.store, product, status)
+      }
+    } catch (e) {
+      setInventoryError(e instanceof Error ? e.message : 'Failed to update pantry status')
+    }
+  }, [upsertRestockItem])
+
+  // "Put Away Groceries" ingestion: upserts each checked cart item into
+  // inventory_items (status in_stock, last_restocked_at refreshed), then
+  // marks the dispatch as put away locally so the prompt doesn't reappear.
+  const handlePutAwayDone = useCallback(async (dispatchId: string, items: CartItem[]) => {
+    try {
+      await Promise.all(items.map(item => putAwayItem({
+        name: item.product.name,
+        brand: item.product.brand || null,
+        image_url: item.product.image || null,
+        store: item.product.store,
+        original_product_id: item.product.id,
+        unit_price: item.product.price || null,
+      })))
+      setDispatches(prev => prev.map(d => d.id === dispatchId ? { ...d, putAwayAt: Date.now() } : d))
+    } catch (e) {
+      setInventoryError(e instanceof Error ? e.message : 'Failed to save pantry items')
+    }
+  }, [])
+
+  const handleAddPantryItem = useCallback(async (input: { name: string; brand: string; imageUrl: string; store: InventoryStore; barcode: string }) => {
+    await createInventoryItem({
+      name: input.name,
+      brand: input.brand || null,
+      image_url: input.imageUrl || null,
+      store: input.store,
+      barcode: input.barcode || null,
+    })
+  }, [])
+
   const removeFromCart = useCallback((productId: string) => {
-    updateActiveDispatch(d => ({ ...d, cart: d.cart.filter(i => i.product.productId !== productId) }))
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.filter(i => i.product.id !== productId) }))
   }, [updateActiveDispatch])
 
   const updateQty = useCallback((productId: string, qty: number) => {
     if (qty <= 0) removeFromCart(productId)
-    else updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, quantity: Math.min(qty, 20) } : i) }))
+    else updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.id === productId ? { ...i, quantity: Math.min(qty, 20) } : i) }))
   }, [removeFromCart, updateActiveDispatch])
 
   const updateNote = useCallback((productId: string, note: string) => {
-    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, note } : i) }))
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.id === productId ? { ...i, note } : i) }))
   }, [updateActiveDispatch])
 
   const setReplacement = useCallback((productId: string, replacement: CartReplacement) => {
-    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, replacement } : i) }))
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.id === productId ? { ...i, replacement } : i) }))
     setReplacingForId(null)
   }, [updateActiveDispatch])
 
   const removeReplacement = useCallback((productId: string) => {
-    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.productId === productId ? { ...i, replacement: undefined } : i) }))
+    updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.id === productId ? { ...i, replacement: undefined } : i) }))
   }, [updateActiveDispatch])
 
   const addDispatch = useCallback(() => {
-    const num = dispatchCounter.current++
-    saveCounter(dispatchCounter.current)
-    const d: Dispatch = { id: `dispatch-${Date.now()}`, name: `Dispatch ${num}`, cart: [], note: '' }
+    const type = activeStoreType
+    const num = dispatchCounters.current[type]++
+    saveCounters(dispatchCounters.current)
+    const d: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[type]} Dispatch ${num}`, store: type, cart: [], note: '' }
     setDispatches(prev => [...prev, d])
     setActiveDispatchId(d.id)
     setShoppingActive(true)
-  }, [])
+  }, [activeStoreType])
 
   const renameDispatch = useCallback((id: string, name: string) => {
     setDispatches(prev => prev.map(d => d.id === id ? { ...d, name } : d))
   }, [])
 
   const deleteDispatch = useCallback((id: string) => {
+    const target = dispatches.find(d => d.id === id)
+    if (!target) return
     setDispatches(prev => {
-      if (prev.length <= 1) {
-        // Reset the last dispatch to empty instead of removing it
-        const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: 'Dispatch 1', cart: [], note: '' }
-        dispatchCounter.current = 2
-        saveCounter(2)
-        setActiveDispatchId(fresh.id)
-        return [fresh]
+      const sameType = prev.filter(d => d.store === target.store)
+      if (sameType.length <= 1) {
+        // Reset the last dispatch of this store type to empty instead of removing it
+        const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[target.store]} Dispatch 1`, store: target.store, cart: [], note: '' }
+        dispatchCounters.current[target.store] = 2
+        saveCounters(dispatchCounters.current)
+        if (id === activeDispatchId) setActiveDispatchId(fresh.id)
+        return prev.map(d => d.id === id ? fresh : d)
       }
       const next = prev.filter(d => d.id !== id)
-      if (id === activeDispatchId) setActiveDispatchId(next[0].id)
+      if (id === activeDispatchId) {
+        const fallback = next.find(d => d.store === target.store)!
+        setActiveDispatchId(fallback.id)
+      }
       return next
     })
     // Also delete from Firestore if it was sent
-    const dispatch = dispatches.find(d => d.id === id)
-    if (dispatch?.firestoreId) deleteDoc(doc(db, 'dispatches', dispatch.firestoreId)).catch(() => {})
+    if (target.firestoreId) deleteDoc(doc(db, 'dispatches', target.firestoreId)).catch(() => {})
   }, [activeDispatchId, dispatches])
 
-  const clearAllDispatches = useCallback(() => {
-    dispatches.forEach(d => {
+  const clearAllDispatches = useCallback((type: StoreType) => {
+    dispatches.filter(d => d.store === type).forEach(d => {
       if (d.firestoreId) deleteDoc(doc(db, 'dispatches', d.firestoreId)).catch(() => {})
     })
-    const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: 'Dispatch 1', cart: [], note: '' }
-    dispatchCounter.current = 2
-    saveCounter(2)
-    setDispatches([fresh])
-    setActiveDispatchId(fresh.id)
-    setShoppingActive(false)
-  }, [dispatches])
+    const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[type]} Dispatch 1`, store: type, cart: [], note: '' }
+    dispatchCounters.current[type] = 2
+    saveCounters(dispatchCounters.current)
+    setDispatches(prev => [...prev.filter(d => d.store !== type), fresh])
+    if (type === activeStoreType) {
+      setActiveDispatchId(fresh.id)
+      setShoppingActive(false)
+    }
+  }, [dispatches, activeStoreType])
 
   const setOrderNote = useCallback((note: string) => {
     updateActiveDispatch(d => ({ ...d, note }))
@@ -1875,26 +2893,28 @@ export default function ShoppingApp() {
     updateActiveDispatch(d => ({ ...d, tip }))
   }, [updateActiveDispatch])
 
-  const toggleFavorite = useCallback((product: KrogerProduct) => {
+  const toggleFavorite = useCallback((product: Product) => {
     const fav: HistoryItem = {
-      productId: product.productId,
-      description: product.description,
+      productId: product.id,
+      description: product.name,
       brand: product.brand || '',
-      img: getProductImage(product, 'thumbnail') || getProductImage(product, 'small'),
-      size: product.items?.[0]?.size ?? '',
-      price: product.items?.[0]?.price?.regular ?? 0,
+      img: product.image,
+      size: product.size,
+      price: product.price,
+      store: product.store,
     }
+    const favKey = `${product.store}-${product.id}`
     if (familyId) {
-      const isFav = favorites.some(f => f.productId === product.productId)
+      const isFav = favorites.some(f => f.productId === product.id && f.store === product.store)
       if (isFav) {
-        deleteDoc(doc(db, 'families', familyId, 'favorites', product.productId))
+        deleteDoc(doc(db, 'families', familyId, 'favorites', favKey))
       } else {
-        setDoc(doc(db, 'families', familyId, 'favorites', product.productId), fav)
+        setDoc(doc(db, 'families', familyId, 'favorites', favKey), fav)
       }
     } else {
       setFavorites(prev => {
-        const isFav = prev.some(f => f.productId === product.productId)
-        const next = isFav ? prev.filter(f => f.productId !== product.productId) : [...prev, fav]
+        const isFav = prev.some(f => f.productId === product.id && f.store === product.store)
+        const next = isFav ? prev.filter(f => !(f.productId === product.id && f.store === product.store)) : [...prev, fav]
         saveFavorites(next)
         return next
       })
@@ -1925,12 +2945,22 @@ export default function ShoppingApp() {
     return unsub
   }, [familyId])
 
-  const removeFromHistory = useCallback((productId: string) => {
+  // Live-sync the Family Pantry from Supabase while the Pantry tab is open
+  useEffect(() => {
+    if (!pantryOpen) return
+    const unsub = subscribeInventory(
+      (items) => { setInventoryItems(items); setInventoryLoading(false); setInventoryError('') },
+      (msg) => { setInventoryError(msg); setInventoryLoading(false) }
+    )
+    return unsub
+  }, [pantryOpen])
+
+  const removeFromHistory = useCallback((productId: string, storeType: StoreType) => {
     if (familyId) {
-      deleteDoc(doc(db, 'families', familyId, 'purchaseHistory', productId)).catch(() => {})
+      deleteDoc(doc(db, 'families', familyId, 'purchaseHistory', `${storeType}-${productId}`)).catch(() => {})
     } else {
       setPurchaseHistory(prev => {
-        const next = prev.filter(h => h.productId !== productId)
+        const next = prev.filter(h => !(h.productId === productId && h.store === storeType))
         saveHistory(next)
         return next
       })
@@ -1965,6 +2995,7 @@ export default function ShoppingApp() {
               checked: data.checkedItems.length,
               total: data.items.reduce((n, i) => n + i.qty, 0),
               checkedItems: data.checkedItems,
+              status: data.status,
             },
           }))
         }
@@ -1974,17 +3005,18 @@ export default function ShoppingApp() {
   }, [dispatches])
 
   const sendToShopper = useCallback(async (shopper: Shopper) => {
-    if (!store || activeDispatch.cart.length === 0) return
+    if (activeDispatch.cart.length === 0) return
+    if (activeDispatch.store === 'kroger' && !store) return
     setSendingShopper(true)
     try {
       const items: SharedItem[] = activeDispatch.cart.map((ci) => ({
-        id: ci.product.productId, qty: ci.quantity, note: ci.note,
-        name: ci.product.description, brand: ci.product.brand || '',
-        img: getProductImage(ci.product, 'small') || getProductImage(ci.product, 'thumbnail'),
-        size: getSize(ci.product), price: getPrice(ci.product),
-        aisle: ci.product.aisleLocations?.[0]?.description || 'Other',
-        aisleNum: ci.product.aisleLocations?.[0]?.number || '0',
-        seq: parseInt(ci.product.aisleLocations?.[0]?.sequenceNumber || '0', 10),
+        id: ci.product.id, qty: ci.quantity, note: ci.note,
+        name: ci.product.name, brand: ci.product.brand || '',
+        img: ci.product.image, size: ci.product.size, price: ci.product.price,
+        aisle: ci.product.aisle || 'Other',
+        aisleNum: ci.product.aisleNum || '0',
+        seq: ci.product.seq ?? 0,
+        store: ci.product.store,
         ...(ci.replacement ? { sub: { id: ci.replacement.productId, name: ci.replacement.description, brand: ci.replacement.brand, img: ci.replacement.img, size: ci.replacement.size, price: ci.replacement.price, qty: ci.replacement.quantity, note: ci.replacement.note } } : {}),
       }))
 
@@ -1993,9 +3025,10 @@ export default function ShoppingApp() {
       const liveDispatchData: LiveDispatch = {
         id: firestoreId,
         name: activeDispatch.name,
-        store: store.name,
-        addr: `${store.address.addressLine1}, ${store.address.city}, ${store.address.state}`,
-        locationId: store.locationId,
+        storeType: activeDispatch.store,
+        store: activeDispatch.store === 'kroger' ? store!.name : 'Costco',
+        addr: activeDispatch.store === 'kroger' ? `${store!.address.addressLine1}, ${store!.address.city}, ${store!.address.state}` : '',
+        locationId: activeDispatch.store === 'kroger' ? store!.locationId : '',
         items,
         note: activeDispatch.note,
         shopperId: shopper.id,
@@ -2063,7 +3096,28 @@ export default function ShoppingApp() {
 
   const isAdmin = memberRoles.includes('admin')
 
-  if (!store) {
+  if (pantryOpen) {
+    return (
+      <>
+        <PantryView
+          items={inventoryItems}
+          loading={inventoryLoading}
+          error={inventoryError}
+          onClose={() => setPantryOpen(false)}
+          onSetStatus={handleSetInventoryStatus}
+          onAddItem={() => setAddPantryItemOpen(true)}
+        />
+        {addPantryItemOpen && (
+          <AddPantryItemModal
+            onSave={handleAddPantryItem}
+            onClose={() => setAddPantryItemOpen(false)}
+          />
+        )}
+      </>
+    )
+  }
+
+  if (activeStoreType === 'kroger' && !store) {
     return <StorePicker locationResults={locationResults} isLoading={locationLoading} error={locationError} onSearch={searchLocations} onSelect={selectStore} />
   }
 
@@ -2071,7 +3125,8 @@ export default function ShoppingApp() {
     return (
       <>
         <HomeScreen
-          store={store}
+          krogerLocation={store}
+          activeStoreType={activeStoreType}
           dispatches={dispatches}
           activeDispatchId={activeDispatchId}
           shoppers={shoppers}
@@ -2079,6 +3134,7 @@ export default function ShoppingApp() {
           memberName={memberName!}
           memberRoles={memberRoles}
           isAdmin={isAdmin}
+          onChangeStoreType={changeStoreType}
           onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
           onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
           onAddDispatch={addDispatch}
@@ -2086,6 +3142,8 @@ export default function ShoppingApp() {
           onClearAllDispatches={clearAllDispatches}
           onManageFamily={() => setAdminPanelOpen(true)}
           onLogout={logout}
+          onOpenPantry={() => setPantryOpen(true)}
+          onPutAway={(id) => setPutAwayDispatchId(id)}
         />
         {adminPanelOpen && (
           <AdminPanel
@@ -2095,6 +3153,17 @@ export default function ShoppingApp() {
             onClose={() => setAdminPanelOpen(false)}
           />
         )}
+        {putAwayDispatchId && (() => {
+          const target = dispatches.find(d => d.id === putAwayDispatchId)
+          if (!target) return null
+          return (
+            <PutAwayModal
+              dispatch={target}
+              onDone={(items) => handlePutAwayDone(target.id, items)}
+              onClose={() => setPutAwayDispatchId(null)}
+            />
+          )
+        })()}
       </>
     )
   }
@@ -2135,8 +3204,8 @@ export default function ShoppingApp() {
       </header>
 
       {/* Store bar */}
-      {store && (
-        <div className="bg-white px-4 py-2.5 flex items-center justify-between shadow-sm" style={{ borderBottom: `1px solid #E5DDD0` }}>
+      {activeStoreType === 'kroger' && store ? (
+        <div className="bg-white px-4 py-2.5 flex items-center justify-between shadow-sm" style={{ borderBottom: `1px solid #E5DDD0`, borderLeft: `3px solid ${IC.kroger}` }}>
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <div className="w-6 h-6 rounded-lg flex-shrink-0 flex items-center justify-center" style={{ backgroundColor: `${IC.gold}20` }}>
               <svg className="w-3.5 h-3.5" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
@@ -2154,15 +3223,20 @@ export default function ShoppingApp() {
             style={{ color: IC.gold }}
           >Change</button>
         </div>
-      )}
+      ) : activeStoreType === 'costco' ? (
+        <div className="bg-white px-4 py-2.5 flex items-center gap-2 shadow-sm" style={{ borderBottom: `1px solid #E5DDD0`, borderLeft: `3px solid ${IC.costco}` }}>
+          <StoreTag store="costco" />
+          <p className="text-xs" style={{ color: IC.textMuted }}>Searching Costco.com nationwide</p>
+        </div>
+      ) : null}
 
       {/* Sticky area: dispatch switcher + search bar */}
       <div className="sticky top-14 z-20 bg-white shadow-sm" style={{ borderBottom: `1px solid #E5DDD0` }}>
         {/* Dispatch switcher */}
-        {store && (
+        {(activeStoreType === 'costco' || store) && (
           <div className="px-4 pt-2 overflow-x-auto" style={{ borderBottom: `1px solid #E5DDD0` }}>
             <div className="flex gap-2 min-w-max pb-2">
-              {dispatches.map(d => {
+              {dispatches.filter(d => d.store === activeStoreType).map(d => {
                 const isActive = d.id === activeDispatchId
                 const count = d.cart.reduce((n, i) => n + i.quantity, 0)
                 const progress = d.firestoreId ? liveProgress[d.id] : null
@@ -2217,7 +3291,7 @@ export default function ShoppingApp() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search products..."
+              placeholder={`Search ${STORE_LABEL[activeStoreType]} products...`}
               className="w-full rounded-2xl pl-11 py-3 text-base focus:outline-none transition-colors duration-150 bg-white"
               style={{ border: `2px solid #E5DDD0`, color: IC.green, paddingRight: searchQuery ? '2.5rem' : '1rem' }}
               onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
@@ -2274,20 +3348,21 @@ export default function ShoppingApp() {
               >Recent Purchases</button>
             </div>
 
-            {activeTab === 'favorites' && (
-              favorites.length === 0 ? (
+            {activeTab === 'favorites' && (() => {
+              const storeFavorites = favorites.filter(f => f.store === activeStoreType)
+              return storeFavorites.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-24 text-center">
                   <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
-                  <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No Favorites Yet</p>
+                  <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No {STORE_LABEL[activeStoreType]} Favorites Yet</p>
                   <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Tap ♡ on any product to save it here</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {favorites.map(fav => (
+                  {storeFavorites.map(fav => (
                     <ProductCard
                       key={fav.productId}
                       product={historyItemToProduct(fav)}
-                      cartItem={activeDispatch.cart.find(i => i.product.productId === fav.productId)}
+                      cartItem={activeDispatch.cart.find(i => i.product.id === fav.productId)}
                       isFavorite={true}
                       onAdd={addToCart}
                       onUpdateQty={updateQty}
@@ -2296,29 +3371,30 @@ export default function ShoppingApp() {
                   ))}
                 </div>
               )
-            )}
+            })()}
 
-            {activeTab === 'recent' && (
-              purchaseHistory.length === 0 ? (
+            {activeTab === 'recent' && (() => {
+              const storeHistory = purchaseHistory.filter(h => h.store === activeStoreType)
+              return storeHistory.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-24 text-center">
                   <RadarLogo className="w-20 h-20 opacity-30 mb-5" />
-                  <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No Recent Purchases</p>
+                  <p className="text-lg font-black uppercase tracking-widest" style={{ color: IC.green }}>No Recent {STORE_LABEL[activeStoreType]} Purchases</p>
                   <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Items will appear here after a shopper checks out</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {purchaseHistory.map(item => (
+                  {storeHistory.map(item => (
                     <div key={item.productId} className="relative">
                       <ProductCard
                         product={historyItemToProduct(item)}
-                        cartItem={activeDispatch.cart.find(i => i.product.productId === item.productId)}
-                        isFavorite={favorites.some(f => f.productId === item.productId)}
+                        cartItem={activeDispatch.cart.find(i => i.product.id === item.productId)}
+                        isFavorite={favorites.some(f => f.productId === item.productId && f.store === item.store)}
                         onAdd={addToCart}
                         onUpdateQty={updateQty}
                         onToggleFavorite={toggleFavorite}
                       />
                       <button
-                        onClick={() => removeFromHistory(item.productId)}
+                        onClick={() => removeFromHistory(item.productId, item.store)}
                         className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full flex items-center justify-center z-10 active:scale-90 transition-all duration-100"
                         style={{ backgroundColor: '#FEE2E2' }}
                         aria-label="Remove from history"
@@ -2331,7 +3407,7 @@ export default function ShoppingApp() {
                   ))}
                 </div>
               )
-            )}
+            })()}
           </>
         )}
 
@@ -2358,10 +3434,10 @@ export default function ShoppingApp() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
               {products.map((product) => (
                 <ProductCard
-                  key={product.productId}
+                  key={product.id}
                   product={product}
-                  cartItem={activeDispatch.cart.find((i) => i.product.productId === product.productId)}
-                  isFavorite={favorites.some(f => f.productId === product.productId)}
+                  cartItem={activeDispatch.cart.find((i) => i.product.id === product.id)}
+                  isFavorite={favorites.some(f => f.productId === product.id && f.store === product.store)}
                   onAdd={addToCart}
                   onUpdateQty={updateQty}
                   onToggleFavorite={toggleFavorite}
@@ -2382,12 +3458,36 @@ export default function ShoppingApp() {
             )}
           </>
         )}
+
+        {/* Fallback for items Costco search can't find */}
+        {activeStoreType === 'costco' && searchQuery.trim() && !isSearching && (
+          <div className="mt-8 text-center">
+            <button
+              onClick={() => setCustomItemOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold transition-all duration-150 active:scale-95"
+              style={{ border: `1.5px dashed ${IC.costco}80`, color: IC.costco }}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+              </svg>
+              Can&apos;t find it? Add &quot;{searchQuery.trim()}&quot; as custom item
+            </button>
+          </div>
+        )}
       </main>
+
+      {customItemOpen && (
+        <CustomItemModal
+          initialName={searchQuery.trim()}
+          onAdd={addCustomItem}
+          onClose={() => setCustomItemOpen(false)}
+        />
+      )}
 
       {cartOpen && (
         <CartPanel
           dispatch={activeDispatch}
-          canDelete={dispatches.length > 1}
+          canDelete={dispatches.filter(d => d.store === activeStoreType).length > 1}
           onRename={(name) => renameDispatch(activeDispatchId, name)}
           onDeleteDispatch={() => { deleteDispatch(activeDispatchId); setCartOpen(false) }}
           onClose={() => setCartOpen(false)}
@@ -2403,12 +3503,12 @@ export default function ShoppingApp() {
         />
       )}
 
-      {replacingForId && store && (() => {
-        const forItem = activeDispatch.cart.find(i => i.product.productId === replacingForId)
+      {replacingForId && (() => {
+        const forItem = activeDispatch.cart.find(i => i.product.id === replacingForId)
         if (!forItem) return null
         return (
           <ReplacementPanel
-            forItem={forItem} store={store} history={purchaseHistory}
+            forItem={forItem} krogerLocation={store} history={purchaseHistory}
             onSelect={(r) => setReplacement(replacingForId, r)}
             onClose={() => setReplacingForId(null)}
           />

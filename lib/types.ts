@@ -1,3 +1,33 @@
+export type StoreType = 'kroger' | 'costco'
+
+export interface CostcoProduct {
+  id: string
+  title: string
+  brand: string
+  image: string
+  price: number
+  listPrice?: number
+  size: string
+  availability: string
+  inStock: boolean
+}
+
+// Flat shape both KrogerProduct and CostcoProduct normalize into, so the
+// cart/search/dispatch UI never has to branch on which store an item came from.
+export interface Product {
+  id: string
+  store: StoreType
+  name: string
+  brand: string
+  image: string
+  price: number
+  size: string
+  aisle?: string
+  aisleNum?: string
+  seq?: number
+  inStock?: boolean
+}
+
 export interface KrogerLocation {
   locationId: string
   name: string
@@ -55,10 +85,13 @@ export interface CartReplacement {
 }
 
 export interface CartItem {
-  product: KrogerProduct
+  product: Product
   quantity: number
   note: string
   replacement?: CartReplacement
+  // Set when this line item was auto-added/updated by the Pantry's restock
+  // trigger (item went to Running Low / Out of Stock while put away).
+  restockStatus?: 'running_low' | 'out_of_stock'
 }
 
 export interface HistoryItem {
@@ -68,6 +101,7 @@ export interface HistoryItem {
   img: string
   size: string
   price: number
+  store: StoreType
 }
 
 // Compact format stored in URL
@@ -83,6 +117,7 @@ export interface SharedItem {
   aisle: string
   aisleNum: string
   seq: number
+  store?: StoreType
   sub?: {
     id: string
     name: string
@@ -97,6 +132,7 @@ export interface SharedItem {
 
 export interface SharedList {
   store: string
+  storeType?: StoreType
   addr: string
   items: SharedItem[]
   note: string
@@ -105,6 +141,7 @@ export interface SharedList {
 export interface Dispatch {
   id: string
   name: string
+  store: StoreType
   cart: CartItem[]
   note: string
   tip?: number
@@ -112,6 +149,8 @@ export interface Dispatch {
   shopperId?: string
   shopperName?: string
   sentAt?: number
+  // Set locally once someone has run this dispatch through "Put Away Groceries".
+  putAwayAt?: number
 }
 
 export interface Shopper {
@@ -139,6 +178,7 @@ export interface Family {
 export interface LiveDispatch {
   id: string
   name: string
+  storeType: StoreType
   store: string
   addr: string
   locationId: string
@@ -152,4 +192,25 @@ export interface LiveDispatch {
   confirmedQtys: Record<string, number>
   familyId?: string
   tip?: number
+}
+
+// ── Family Pantry Inventory (Supabase) ──────────────────────────────────────
+
+export type InventoryStatus = 'in_stock' | 'running_low' | 'out_of_stock'
+export type InventoryStore = StoreType | 'other'
+
+// Mirrors the `inventory_items` table — see supabase/migrations/0001_inventory_items.sql
+// and 0002_inventory_items_barcode.sql
+export interface InventoryItem {
+  id: string
+  name: string
+  brand: string | null
+  image_url: string | null
+  store: InventoryStore
+  status: InventoryStatus
+  original_product_id: string | null
+  barcode: string | null
+  unit_price: number | null
+  last_restocked_at: string
+  updated_at: string
 }
