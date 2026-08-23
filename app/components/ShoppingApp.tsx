@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { collection, doc, setDoc, updateDoc, onSnapshot, getDoc, getDocs, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { DispatchDetailScreen } from './DispatchDetailScreen'
 import { subscribeInventory, updateInventoryStatus, deleteInventoryItem, putAwayItem, createInventoryItem, lookupBarcode } from '@/lib/inventory'
 import type { OpenFoodFactsLookup } from '@/lib/inventory'
 import type { KrogerLocation, KrogerProduct, CostcoProduct, Product, StoreType, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch, FamilyMember, MemberRole, InventoryItem, InventoryStatus, InventoryStore } from '@/lib/types'
@@ -974,11 +975,14 @@ function HomeScreen({
               {orderHistory.map(d => {
                 const progress = liveProgress[d.id]
                 const isDelivered = progress?.status === 'complete' || progress?.status === 'archived'
+                const needsReview = isDelivered && !d.putAwayAt
                 return (
                   <div
                     key={d.id}
-                    className="w-full bg-white rounded-2xl px-5 py-4 shadow-sm"
-                    style={{ border: '1px solid #E5DDD0' }}
+                    className="w-full rounded-2xl px-5 py-4 shadow-sm"
+                    style={needsReview
+                      ? { backgroundColor: `${IC.gold}10`, border: `2px solid ${IC.gold}` }
+                      : { backgroundColor: 'white', border: '1px solid #E5DDD0' }}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -990,14 +994,19 @@ function HomeScreen({
                             </span>
                           )}
                         </div>
-                        {isDelivered && !d.putAwayAt ? (
-                          <button
-                            onClick={() => onPutAway(d.id)}
-                            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider text-white transition-all duration-150 active:scale-95"
-                            style={{ backgroundColor: IC.green }}
-                          >
-                            📦 Put Away Groceries
-                          </button>
+                        {needsReview ? (
+                          <>
+                            <p className="text-xs font-bold mt-1.5" style={{ color: IC.gold }}>
+                              ✓ Completed Dispatch available for review — {STORE_LABEL[d.store]}
+                            </p>
+                            <button
+                              onClick={() => onPutAway(d.id)}
+                              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider text-white transition-all duration-150 active:scale-95"
+                              style={{ backgroundColor: IC.green }}
+                            >
+                              📦 Review & Put Away →
+                            </button>
+                          </>
                         ) : isDelivered && d.putAwayAt ? (
                           <p className="text-xs font-bold mt-1.5" style={{ color: IC.textMuted }}>✓ Put away {timeAgo(new Date(d.putAwayAt).toISOString())}</p>
                         ) : progress ? (
@@ -1436,12 +1445,14 @@ function ReplacementPanel({
 // ── CartPanel ─────────────────────────────────────────────────────────────────
 
 function CartPanel({
-  dispatch, onClearCart,
+  dispatch, onClearCart, canShopNow, onShopNow,
   onClose, onUpdateQty, onUpdateNote, onRemove, onSendDispatch,
   onAddReplacement, onRemoveReplacement, onSetNote, onSetTip, liveCheckedItems,
 }: {
   dispatch: Dispatch
   onClearCart: () => void
+  canShopNow: boolean
+  onShopNow: () => void
   onClose: () => void
   onUpdateQty: (id: string, qty: number) => void
   onUpdateNote: (id: string, note: string) => void
@@ -1521,15 +1532,6 @@ function CartPanel({
                       <p className={`text-sm font-bold leading-tight${isCollected ? ' line-through opacity-60' : ''}`} style={{ color: IC.green }}>{item.product.name}</p>
                       {isCollected && (
                         <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: `${IC.green}20`, color: IC.green }}>✓ Collected</span>
-                      )}
-                      {item.restockStatus && (
-                        <span
-                          className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0"
-                          style={{
-                            backgroundColor: `${STATUS_CONFIG[item.restockStatus].color}20`,
-                            color: STATUS_CONFIG[item.restockStatus].color,
-                          }}
-                        >{STATUS_CONFIG[item.restockStatus].emoji} {STATUS_CONFIG[item.restockStatus].label}</span>
                       )}
                     </div>
                     {item.product.price > 0 && (
@@ -1642,6 +1644,16 @@ function CartPanel({
                   style={{ backgroundColor: IC.green }}>+</button>
               </div>
             </div>
+          )}
+          {canShopNow && (
+            <button
+              onClick={onShopNow}
+              disabled={dispatch.cart.length === 0}
+              className="w-full font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] text-sm tracking-widest uppercase disabled:opacity-40"
+              style={{ backgroundColor: IC.gold, color: IC.green }}
+            >
+              🛒 Shop Now — Go to Store Mode
+            </button>
           )}
           <button
             onClick={onSendDispatch}
@@ -2140,97 +2152,208 @@ function PantryView({ items, loading, error, onClose, onSetStatus, onAddItem, on
   )
 }
 
-// ── PutAwayModal ──────────────────────────────────────────────────────────────
+// ── RestockReviewModal ───────────────────────────────────────────────────────
 
-function PutAwayModal({ dispatch, onDone, onClose }: {
-  dispatch: Dispatch
-  onDone: (items: CartItem[]) => Promise<void>
+export interface RestockReviewSubmission {
+  firestoreId: string
+  foundItems: SharedItem[]
+  restockItems: { item: SharedItem; qty: number }[]
+  requeueItems: SharedItem[]
+}
+
+// Item-by-item reconciliation for a completed dispatch: found items default
+// to checked (restock into the pantry, quantity editable), skipped items are
+// clearly separated and left unchecked, with an optional "add back to next
+// cart" toggle instead of silently touching their pantry status.
+function RestockReviewModal({ dispatchLocal, onSubmit, onClose }: {
+  dispatchLocal: Dispatch
+  onSubmit: (payload: RestockReviewSubmission) => Promise<void>
   onClose: () => void
 }) {
-  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [liveDispatch, setLiveDispatch] = useState<LiveDispatch | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [restockChecked, setRestockChecked] = useState<Record<string, boolean>>({})
+  const [qtyOverrides, setQtyOverrides] = useState<Record<string, number>>({})
+  const [requeueChecked, setRequeueChecked] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState(false)
 
-  const toggle = (id: string) => setChecked(prev => {
-    const next = new Set(prev)
-    if (next.has(id)) next.delete(id); else next.add(id)
-    return next
-  })
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!dispatchLocal.firestoreId) {
+        setLoadError('This dispatch was never sent.')
+        setLoading(false)
+        return
+      }
+      try {
+        const snap = await getDoc(doc(db, 'dispatches', dispatchLocal.firestoreId))
+        if (cancelled) return
+        const data = snap.data() as LiveDispatch | undefined
+        if (!data) { setLoadError('Could not find this dispatch.'); setLoading(false); return }
+        setLiveDispatch(data)
+        const initial: Record<string, boolean> = {}
+        for (const item of data.items) initial[item.id] = data.checkedItems.includes(item.id)
+        setRestockChecked(initial)
+        setLoading(false)
+      } catch (e) {
+        if (!cancelled) { setLoadError(e instanceof Error ? e.message : 'Failed to load dispatch'); setLoading(false) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [dispatchLocal.firestoreId])
 
-  const allChecked = checked.size === dispatch.cart.length && dispatch.cart.length > 0
+  const getQty = (item: SharedItem) => qtyOverrides[item.id] ?? liveDispatch?.confirmedQtys[item.id] ?? item.qty
+  const setQty = (item: SharedItem, qty: number) => setQtyOverrides(prev => ({ ...prev, [item.id]: Math.max(1, qty) }))
 
-  const handleSave = async () => {
-    if (checked.size === 0) return
+  const handleSubmit = async () => {
+    if (!liveDispatch || !dispatchLocal.firestoreId) return
     setSaving(true)
     try {
-      await onDone(dispatch.cart.filter(i => checked.has(i.product.id)))
+      const foundItems = liveDispatch.items.filter(i => liveDispatch.checkedItems.includes(i.id))
+      const notFoundItems = liveDispatch.items.filter(i => !liveDispatch.checkedItems.includes(i.id))
+      await onSubmit({
+        firestoreId: dispatchLocal.firestoreId,
+        foundItems,
+        restockItems: foundItems.filter(i => restockChecked[i.id]).map(i => ({ item: i, qty: getQty(i) })),
+        requeueItems: notFoundItems.filter(i => requeueChecked[i.id]),
+      })
       onClose()
     } finally {
       setSaving(false)
     }
   }
 
+  const restockCount = liveDispatch ? liveDispatch.items.filter(i => liveDispatch.checkedItems.includes(i.id) && restockChecked[i.id]).length : 0
+
   return (
     <div className="fixed inset-0 z-[70] flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-t-3xl shadow-2xl flex flex-col max-h-[90vh]">
+      <div className="relative bg-white rounded-t-3xl shadow-2xl flex flex-col max-h-[92vh]">
         <div className="flex justify-center pt-3 pb-1">
           <div className="w-10 h-1 rounded-full" style={{ backgroundColor: '#E5DDD0' }} />
         </div>
-        <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid #E5DDD0' }}>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-black uppercase tracking-wider text-sm" style={{ color: IC.green }}>Put Away Groceries</h3>
-              <StoreTag store={dispatch.store} />
-            </div>
-            <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>Check off items as you unpack them</p>
+        <div className="px-5 py-3" style={{ borderBottom: '1px solid #E5DDD0' }}>
+          <div className="flex items-center gap-2">
+            <h3 className="font-black uppercase tracking-wider text-sm" style={{ color: IC.green }}>Review & Put Away</h3>
+            <StoreTag store={dispatchLocal.store} />
           </div>
-          <button
-            onClick={() => setChecked(allChecked ? new Set() : new Set(dispatch.cart.map(i => i.product.id)))}
-            className="text-xs font-bold flex-shrink-0 active:scale-95 transition-all duration-100"
-            style={{ color: IC.gold }}
-          >{allChecked ? 'Clear all' : 'Check all'}</button>
+          <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>Confirm what to restock in your pantry, then archive this dispatch</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-          {dispatch.cart.map(item => {
-            const isChecked = checked.has(item.product.id)
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-5">
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-16 gap-3">
+              <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+              <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Loading dispatch…</p>
+            </div>
+          )}
+          {loadError && !loading && (
+            <p className="text-sm font-medium text-center py-8" style={{ color: '#e53935' }}>{loadError}</p>
+          )}
+
+          {liveDispatch && !loading && (() => {
+            const foundItems = liveDispatch.items.filter(i => liveDispatch.checkedItems.includes(i.id))
+            const notFoundItems = liveDispatch.items.filter(i => !liveDispatch.checkedItems.includes(i.id))
             return (
-              <button
-                key={item.product.id}
-                onClick={() => toggle(item.product.id)}
-                className="w-full flex items-center gap-3 rounded-2xl p-3 text-left transition-all duration-150 active:scale-[0.99]"
-                style={{ backgroundColor: isChecked ? `${IC.green}08` : IC.cream, border: isChecked ? `1px solid ${IC.green}30` : '1px solid #E5DDD0' }}
-              >
-                <span
-                  className="flex-shrink-0 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all duration-200"
-                  style={{ backgroundColor: isChecked ? IC.green : 'white', borderColor: isChecked ? IC.green : '#C8BFB0' }}
-                >
-                  {isChecked && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </span>
-                {item.product.image && (
-                  <img src={item.product.image} alt={item.product.name} loading="lazy" className="w-12 h-12 object-contain flex-shrink-0" />
+              <>
+                {foundItems.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.25em] mb-3" style={{ color: IC.textMuted }}>
+                      Found — Ready to Restock ({foundItems.length})
+                    </p>
+                    <div className="space-y-2">
+                      {foundItems.map(item => {
+                        const checked = restockChecked[item.id] ?? true
+                        const qty = getQty(item)
+                        return (
+                          <div key={item.id} className="rounded-2xl p-3" style={{ backgroundColor: checked ? `${IC.green}08` : IC.cream, border: checked ? `1px solid ${IC.green}30` : '1px solid #E5DDD0' }}>
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={() => setRestockChecked(prev => ({ ...prev, [item.id]: !checked }))}
+                                className="flex-shrink-0 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all duration-200 active:scale-90"
+                                style={{ backgroundColor: checked ? IC.green : 'white', borderColor: checked ? IC.green : '#C8BFB0' }}
+                                aria-label={checked ? 'Uncheck' : 'Check'}
+                              >
+                                {checked && (
+                                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </button>
+                              {item.img && <img src={item.img} alt={item.name} loading="lazy" className="w-12 h-12 object-contain flex-shrink-0" />}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-bold leading-tight" style={{ color: IC.green }}>{item.name}</p>
+                                <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>{item.brand}{item.size ? ` · ${item.size}` : ''}</p>
+                              </div>
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button
+                                  onClick={() => setQty(item, qty - 1)}
+                                  disabled={!checked}
+                                  className="w-7 h-7 rounded-full bg-white flex items-center justify-center font-bold active:scale-[0.85] transition-all duration-100 text-base leading-none disabled:opacity-40"
+                                  style={{ border: '1px solid #E5DDD0', color: IC.green }}
+                                >−</button>
+                                <span className="w-6 text-center text-sm font-black" style={{ color: IC.green }}>{qty}</span>
+                                <button
+                                  onClick={() => setQty(item, qty + 1)}
+                                  disabled={!checked}
+                                  className="w-7 h-7 rounded-full text-white flex items-center justify-center font-bold active:scale-[0.85] transition-all duration-100 text-base leading-none disabled:opacity-40"
+                                  style={{ backgroundColor: IC.green }}
+                                >+</button>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )}
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-bold leading-tight${isChecked ? ' line-through opacity-60' : ''}`} style={{ color: IC.green }}>{item.product.name}</p>
-                  <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>{item.product.brand} {item.quantity > 1 ? `· ×${item.quantity}` : ''}</p>
-                </div>
-              </button>
+
+                {notFoundItems.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.25em] mb-3" style={{ color: IC.textMuted }}>
+                      Not Found / Skipped ({notFoundItems.length})
+                    </p>
+                    <div className="space-y-2">
+                      {notFoundItems.map(item => {
+                        const requeue = requeueChecked[item.id] ?? false
+                        return (
+                          <div key={item.id} className="rounded-2xl p-3" style={{ backgroundColor: IC.cream, border: '1px solid #E5DDD0' }}>
+                            <div className="flex items-center gap-3">
+                              {item.img && <img src={item.img} alt={item.name} loading="lazy" className="w-12 h-12 object-contain flex-shrink-0 opacity-50 grayscale" />}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-bold leading-tight" style={{ color: '#9B8470' }}>{item.name}</p>
+                                <p className="text-xs mt-0.5 font-semibold uppercase tracking-wide" style={{ color: '#B8A88E' }}>Not purchased</p>
+                              </div>
+                              <button
+                                onClick={() => setRequeueChecked(prev => ({ ...prev, [item.id]: !requeue }))}
+                                className="flex-shrink-0 px-3 py-2 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all duration-150 active:scale-95"
+                                style={{
+                                  backgroundColor: requeue ? `${IC.gold}20` : 'white',
+                                  color: requeue ? IC.gold : IC.textMuted,
+                                  border: requeue ? `1.5px solid ${IC.gold}` : '1px solid #E5DDD0',
+                                }}
+                              >{requeue ? '✓ Adding back' : '↻ Add to next cart'}</button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
             )
-          })}
+          })()}
         </div>
 
         <div className="px-5 py-5 bg-white" style={{ borderTop: '1px solid #E5DDD0' }}>
           <button
-            onClick={handleSave}
-            disabled={checked.size === 0 || saving}
+            onClick={handleSubmit}
+            disabled={loading || !!loadError || saving}
             className="w-full text-white font-black py-4 rounded-2xl transition-all duration-150 active:scale-[0.97] text-sm tracking-widest uppercase disabled:opacity-40"
             style={{ backgroundColor: IC.green }}
           >
-            {saving ? 'Saving…' : checked.size === 0 ? 'Check off items to put away' : `Put Away ${checked.size} Item${checked.size !== 1 ? 's' : ''} →`}
+            {saving ? 'Saving…' : `Restock ${restockCount} Item${restockCount !== 1 ? 's' : ''} & Archive →`}
           </button>
         </div>
       </div>
@@ -2846,6 +2969,8 @@ export default function ShoppingApp() {
   const [inventoryLoading, setInventoryLoading] = useState(true)
   const [inventoryError, setInventoryError] = useState('')
   const [putAwayDispatchId, setPutAwayDispatchId] = useState<string | null>(null)
+  const [selfShopFirestoreId, setSelfShopFirestoreId] = useState<string | null>(null)
+  const [selfShopDispatch, setSelfShopDispatch] = useState<LiveDispatch | null>(null)
   const [addPantryItemOpen, setAddPantryItemOpen] = useState(false)
 
   // Load persisted data on mount + check family session
@@ -3112,26 +3237,65 @@ export default function ShoppingApp() {
     }
   }, [upsertRestockItem, mergeInventoryItems, dispatches])
 
-  // "Put Away Groceries" ingestion: upserts each checked cart item into
-  // inventory_items (status in_stock, last_restocked_at refreshed), then
-  // marks the dispatch as put away locally so the prompt doesn't reappear.
-  const handlePutAwayDone = useCallback(async (dispatchId: string, items: CartItem[]) => {
+  // Completed Dispatch review: restocks checked found-items into the pantry
+  // (incrementing quantity), re-queues any skipped items the admin chooses
+  // to carry over into the store's active draft cart, records what was
+  // actually bought to purchase history, then archives the dispatch.
+  const handleRestockReview = useCallback(async (payload: RestockReviewSubmission) => {
     try {
-      const saved = await Promise.all(items.map(item => putAwayItem({
-        name: item.product.name,
-        brand: item.product.brand || null,
-        image_url: item.product.image || null,
-        store: item.product.store,
-        original_product_id: item.product.id,
-        size: item.product.size || null,
-        unit_price: item.product.price || null,
+      const saved = await Promise.all(payload.restockItems.map(({ item, qty }) => putAwayItem({
+        name: item.name,
+        brand: item.brand || null,
+        image_url: item.img || null,
+        store: item.store ?? 'kroger',
+        original_product_id: item.id,
+        size: item.size || null,
+        unit_price: item.price || null,
+        quantity: qty,
       })))
       mergeInventoryItems(saved)
-      setDispatches(prev => prev.map(d => d.id === dispatchId ? { ...d, putAwayAt: Date.now() } : d))
+
+      if (payload.requeueItems.length > 0) {
+        const storeType: StoreType = payload.requeueItems[0].store ?? 'kroger'
+        setDispatches(prev => {
+          const { list, id } = ensureDraftDispatch(prev, storeType)
+          return list.map(d => {
+            if (d.id !== id) return d
+            let cart = d.cart
+            for (const item of payload.requeueItems) {
+              const product: Product = {
+                id: item.id, store: storeType, name: item.name, brand: item.brand || '',
+                image: item.img || '', price: item.price || 0, size: item.size || '',
+              }
+              cart = upsertCartItem(cart, product)
+            }
+            return { ...d, cart }
+          })
+        })
+      }
+
+      if (familyId) {
+        await Promise.all(payload.foundItems.map(item => {
+          const storeType: StoreType = item.store ?? 'kroger'
+          const hist: HistoryItem = { productId: item.id, description: item.name, brand: item.brand, img: item.img, size: item.size, price: item.price, store: storeType }
+          return setDoc(doc(db, 'families', familyId, 'purchaseHistory', `${storeType}-${item.id}`), hist)
+        }))
+      } else if (payload.foundItems.length > 0) {
+        let h = loadHistory()
+        for (const item of payload.foundItems) {
+          const storeType: StoreType = item.store ?? 'kroger'
+          h = addToHistory({ id: item.id, store: storeType, name: item.name, brand: item.brand, image: item.img, price: item.price, size: item.size }, h)
+        }
+        saveHistory(h)
+        setPurchaseHistory(h)
+      }
+
+      await updateDoc(doc(db, 'dispatches', payload.firestoreId), { status: 'archived' })
+      setDispatches(prev => prev.map(d => d.firestoreId === payload.firestoreId ? { ...d, putAwayAt: Date.now() } : d))
     } catch (e) {
-      setInventoryError(e instanceof Error ? e.message : 'Failed to save pantry items')
+      setInventoryError(e instanceof Error ? e.message : 'Failed to complete the review')
     }
-  }, [mergeInventoryItems])
+  }, [mergeInventoryItems, familyId])
 
   const handleAddPantryItem = useCallback(async (input: AddPantryItemInput) => {
     const created = await createInventoryItem({
@@ -3313,81 +3477,151 @@ export default function ShoppingApp() {
     return () => unsubs.forEach(u => u())
   }, [dispatches])
 
-  const sendToShopper = useCallback(async (shopper: Shopper) => {
-    if (activeDispatch.cart.length === 0) return
-    if (activeDispatch.store === 'kroger' && !store) return
-    setSendingShopper(true)
-    try {
-      const items: SharedItem[] = activeDispatch.cart.map((ci) => ({
-        id: ci.product.id, qty: ci.quantity, note: ci.note,
-        name: ci.product.name, brand: ci.product.brand || '',
-        img: ci.product.image, size: ci.product.size, price: ci.product.price,
-        aisle: ci.product.aisle || 'Other',
-        aisleNum: ci.product.aisleNum || '0',
-        seq: ci.product.seq ?? 0,
-        store: ci.product.store,
-        ...(ci.replacement ? { sub: { id: ci.replacement.productId, name: ci.replacement.description, brand: ci.replacement.brand, img: ci.replacement.img, size: ci.replacement.size, price: ci.replacement.price, qty: ci.replacement.quantity, note: ci.replacement.note } } : {}),
-      }))
+  // Live-syncs the full LiveDispatch doc while self-shopping (Shop Now) —
+  // same checklist controls as the dedicated shopper view, just driven from
+  // inside the main app instead of /shop.
+  useEffect(() => {
+    if (!selfShopFirestoreId) return
+    const unsub = onSnapshot(doc(db, 'dispatches', selfShopFirestoreId), snap => {
+      setSelfShopDispatch((snap.data() as LiveDispatch | undefined) ?? null)
+    })
+    return unsub
+  }, [selfShopFirestoreId])
 
-      const firestoreId = activeDispatch.firestoreId || `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const selfShopToggleItem = useCallback(async (itemId: string, checked: boolean) => {
+    if (!selfShopDispatch) return
+    const newChecked = checked
+      ? [...selfShopDispatch.checkedItems, itemId]
+      : selfShopDispatch.checkedItems.filter(id => id !== itemId)
+    const allTotal = selfShopDispatch.items.length
+    await updateDoc(doc(db, 'dispatches', selfShopDispatch.id), {
+      checkedItems: newChecked,
+      status: newChecked.length >= allTotal ? 'complete' : newChecked.length > 0 ? 'shopping' : 'pending',
+    })
+  }, [selfShopDispatch])
 
-      const liveDispatchData: LiveDispatch = {
-        id: firestoreId,
+  const selfShopConfirmQty = useCallback(async (itemId: string, qty: number) => {
+    if (!selfShopDispatch) return
+    await updateDoc(doc(db, 'dispatches', selfShopDispatch.id), { [`confirmedQtys.${itemId}`]: qty })
+  }, [selfShopDispatch])
+
+  // Same semantics as the shopper-side checkout: just marks it complete and
+  // ready for review — the orderer's Review & Put Away step is what
+  // reconciles pantry stock and archives it.
+  const selfShopCheckout = useCallback(async () => {
+    if (!selfShopDispatch) return
+    await updateDoc(doc(db, 'dispatches', selfShopDispatch.id), { status: 'complete' })
+    setSelfShopFirestoreId(null)
+  }, [selfShopDispatch])
+
+  // Writes/updates the LiveDispatch Firestore doc for the active cart,
+  // assigns it to `shopper` (a real family member, or — for self-shopping —
+  // the current user), and rotates in a fresh draft cart for this store.
+  // Shared by "send to a shopper" and "Shop Now" (self-shop), which only
+  // differ in who gets assigned and what status it starts at.
+  const dispatchActiveCart = useCallback(async (shopper: Shopper, initialStatus: LiveDispatch['status']): Promise<string | null> => {
+    if (activeDispatch.cart.length === 0) return null
+    if (activeDispatch.store === 'kroger' && !store) return null
+    const items: SharedItem[] = activeDispatch.cart.map((ci) => ({
+      id: ci.product.id, qty: ci.quantity, note: ci.note,
+      name: ci.product.name, brand: ci.product.brand || '',
+      img: ci.product.image, size: ci.product.size, price: ci.product.price,
+      aisle: ci.product.aisle || 'Other',
+      aisleNum: ci.product.aisleNum || '0',
+      seq: ci.product.seq ?? 0,
+      store: ci.product.store,
+      ...(ci.replacement ? { sub: { id: ci.replacement.productId, name: ci.replacement.description, brand: ci.replacement.brand, img: ci.replacement.img, size: ci.replacement.size, price: ci.replacement.price, qty: ci.replacement.quantity, note: ci.replacement.note } } : {}),
+    }))
+
+    const firestoreId = activeDispatch.firestoreId || `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
+    const liveDispatchData: LiveDispatch = {
+      id: firestoreId,
+      name: activeDispatch.name,
+      storeType: activeDispatch.store,
+      store: activeDispatch.store === 'kroger' ? store!.name : 'Costco',
+      addr: activeDispatch.store === 'kroger' ? `${store!.address.addressLine1}, ${store!.address.city}, ${store!.address.state}` : '',
+      locationId: activeDispatch.store === 'kroger' ? store!.locationId : '',
+      items,
+      note: activeDispatch.note,
+      shopperId: shopper.id,
+      shopperName: shopper.name,
+      createdAt: activeDispatch.firestoreId ? (dispatches.find(d => d.id === activeDispatchId)?.sentAt ?? Date.now()) : Date.now(),
+      status: initialStatus,
+      checkedItems: [],
+      confirmedQtys: {},
+      ...(familyId ? { familyId } : {}),
+      ...(activeDispatch.tip !== undefined ? { tip: activeDispatch.tip } : { tip: Math.min(20, activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)) }),
+    }
+
+    if (activeDispatch.firestoreId) {
+      // Update existing — preserve shopper's check-off progress
+      await updateDoc(doc(db, 'dispatches', firestoreId), {
         name: activeDispatch.name,
-        storeType: activeDispatch.store,
-        store: activeDispatch.store === 'kroger' ? store!.name : 'Costco',
-        addr: activeDispatch.store === 'kroger' ? `${store!.address.addressLine1}, ${store!.address.city}, ${store!.address.state}` : '',
-        locationId: activeDispatch.store === 'kroger' ? store!.locationId : '',
         items,
         note: activeDispatch.note,
         shopperId: shopper.id,
         shopperName: shopper.name,
-        createdAt: activeDispatch.firestoreId ? (dispatches.find(d => d.id === activeDispatchId)?.sentAt ?? Date.now()) : Date.now(),
-        status: 'pending',
-        checkedItems: [],
-        confirmedQtys: {},
+        status: initialStatus,
         ...(familyId ? { familyId } : {}),
-        ...(activeDispatch.tip !== undefined ? { tip: activeDispatch.tip } : { tip: Math.min(20, activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)) }),
-      }
-
-      if (activeDispatch.firestoreId) {
-        // Update existing — preserve shopper's check-off progress
-        await updateDoc(doc(db, 'dispatches', firestoreId), {
-          name: activeDispatch.name,
-          items,
-          note: activeDispatch.note,
-          shopperId: shopper.id,
-          shopperName: shopper.name,
-          status: 'pending',
-          ...(familyId ? { familyId } : {}),
-          tip: activeDispatch.tip ?? Math.min(20, activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)),
-        })
-      } else {
-        await setDoc(doc(db, 'dispatches', firestoreId), liveDispatchData)
-      }
-
-      setDispatches(prev => {
-        const sent = prev.map(d =>
-          d.id === activeDispatchId
-            ? { ...d, firestoreId, shopperId: shopper.id, shopperName: shopper.name, sentAt: Date.now() }
-            : d
-        )
-        // Sending moves this cart into order history — the store's single
-        // active cart concept still needs to resolve to something, so spin
-        // up a fresh empty draft right away.
-        const { list, id } = ensureDraftDispatch(sent, activeDispatch.store)
-        setActiveDispatchId(id)
-        return list
+        tip: activeDispatch.tip ?? Math.min(20, activeDispatch.cart.reduce((n, i) => n + i.quantity, 0)),
       })
-      setShopperPickerOpen(false)
-      setCartOpen(false)
-      setShoppingActive(false)
-      setSearchQuery('')
-      setProducts([])
+    } else {
+      await setDoc(doc(db, 'dispatches', firestoreId), liveDispatchData)
+    }
+
+    setDispatches(prev => {
+      const sent = prev.map(d =>
+        d.id === activeDispatchId
+          ? { ...d, firestoreId, shopperId: shopper.id, shopperName: shopper.name, sentAt: Date.now() }
+          : d
+      )
+      // Sending moves this cart into order history — the store's single
+      // active cart concept still needs to resolve to something, so spin
+      // up a fresh empty draft right away.
+      const { list, id } = ensureDraftDispatch(sent, activeDispatch.store)
+      setActiveDispatchId(id)
+      return list
+    })
+
+    return firestoreId
+  }, [store, activeDispatch, activeDispatchId, dispatches, familyId])
+
+  const sendToShopper = useCallback(async (shopper: Shopper) => {
+    setSendingShopper(true)
+    try {
+      const firestoreId = await dispatchActiveCart(shopper, 'pending')
+      if (firestoreId) {
+        setShopperPickerOpen(false)
+        setCartOpen(false)
+        setShoppingActive(false)
+        setSearchQuery('')
+        setProducts([])
+      }
     } finally {
       setSendingShopper(false)
     }
-  }, [store, activeDispatch, activeDispatchId, dispatches])
+  }, [dispatchActiveCart])
+
+  // Self-shopping: assigns the cart to the current user and jumps straight
+  // into the same shopping checklist a dedicated shopper would use.
+  const shopNow = useCallback(async () => {
+    if (!memberId || !memberName) return
+    setSendingShopper(true)
+    try {
+      const self: Shopper = { id: memberId, name: memberName, createdAt: Date.now() }
+      const firestoreId = await dispatchActiveCart(self, 'shopping')
+      if (firestoreId) {
+        setCartOpen(false)
+        setShoppingActive(false)
+        setSearchQuery('')
+        setProducts([])
+        setSelfShopFirestoreId(firestoreId)
+      }
+    } finally {
+      setSendingShopper(false)
+    }
+  }, [dispatchActiveCart, memberId, memberName])
 
 
   // ── Auth screens ──────────────────────────────────────────────────────────────
@@ -3412,6 +3646,20 @@ export default function ShoppingApp() {
   }
 
   const isAdmin = memberRoles.includes('admin')
+  const canShopNow = isAdmin || memberRoles.includes('order')
+
+  if (selfShopFirestoreId && selfShopDispatch) {
+    return (
+      <DispatchDetailScreen
+        dispatch={selfShopDispatch}
+        onToggle={selfShopToggleItem}
+        onConfirmQty={selfShopConfirmQty}
+        onBack={() => setSelfShopFirestoreId(null)}
+        onCheckout={selfShopCheckout}
+        backLabel="Home"
+      />
+    )
+  }
 
   if (pantryOpen) {
     return (
@@ -3482,9 +3730,9 @@ export default function ShoppingApp() {
           const target = dispatches.find(d => d.id === putAwayDispatchId)
           if (!target) return null
           return (
-            <PutAwayModal
-              dispatch={target}
-              onDone={(items) => handlePutAwayDone(target.id, items)}
+            <RestockReviewModal
+              dispatchLocal={target}
+              onSubmit={handleRestockReview}
               onClose={() => setPutAwayDispatchId(null)}
             />
           )
@@ -3764,6 +4012,8 @@ export default function ShoppingApp() {
         <CartPanel
           dispatch={activeDispatch}
           onClearCart={clearActiveCart}
+          canShopNow={canShopNow}
+          onShopNow={shopNow}
           onClose={() => setCartOpen(false)}
           onUpdateQty={updateQty}
           onUpdateNote={updateNote}

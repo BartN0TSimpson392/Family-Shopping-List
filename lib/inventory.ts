@@ -44,25 +44,27 @@ export interface PutAwayInput {
   original_product_id: string
   size: string | null
   unit_price: number | null
+  quantity: number
 }
 
-// Upserts by (store, original_product_id) — a re-put-away of an item already
-// tracked in the pantry just refreshes last_restocked_at and flips it back
-// to in_stock instead of creating a duplicate row.
+// Upserts by (store, original_product_id) via the restock_inventory_item
+// Postgres function — a re-put-away of an item already tracked in the
+// pantry adds to its existing quantity and flips it back to in_stock,
+// instead of creating a duplicate row. Done server-side (not a client-side
+// read-then-write) so concurrent put-aways from different devices can't
+// race and drop an increment.
 export async function putAwayItem(input: PutAwayInput): Promise<InventoryItem> {
   const client = requireClient()
-  const { data, error } = await client
-    .from('inventory_items')
-    .upsert(
-      {
-        ...input,
-        status: 'in_stock' satisfies InventoryStatus,
-        last_restocked_at: new Date().toISOString(),
-      },
-      { onConflict: 'store,original_product_id' }
-    )
-    .select()
-    .single()
+  const { data, error } = await client.rpc('restock_inventory_item', {
+    p_name: input.name,
+    p_brand: input.brand,
+    p_image_url: input.image_url,
+    p_store: input.store,
+    p_original_product_id: input.original_product_id,
+    p_size: input.size,
+    p_unit_price: input.unit_price,
+    p_quantity: input.quantity,
+  })
   if (error) throw new Error(error.message)
   return data as InventoryItem
 }
