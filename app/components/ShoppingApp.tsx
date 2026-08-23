@@ -2156,6 +2156,25 @@ function PutAwayModal({ dispatch, onDone, onClose }: {
 
 const BARCODE_VIEWPORT_ID = 'ic-barcode-scanner-viewport'
 
+// Immediate "got it" cue on raw detection — distinct (higher-pitched, shorter)
+// from playBarcodeNotFoundTone's later "no match in Open Food Facts" cue.
+function playBarcodeDetectedTone() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const ctx = new AudioCtx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 1046 // ~C6, a bright "beep"
+    gain.gain.value = 0.18
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.1)
+    osc.onended = () => ctx.close()
+  } catch { /* non-critical UX affordance — ignore if Web Audio isn't available */ }
+}
+
 function BarcodeScannerModal({ onDetected, onClose }: {
   onDetected: (code: string) => void
   onClose: () => void
@@ -2163,9 +2182,32 @@ function BarcodeScannerModal({ onDetected, onClose }: {
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
   const [starting, setStarting] = useState(true)
   const [error, setError] = useState('')
+  const [flash, setFlash] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualCode, setManualCode] = useState('')
+  // Point 4: prefer the native BarcodeDetector API when the browser has one
+  // (faster, hardware-accelerated on most mobile browsers) — html5-qrcode
+  // does the actual native-vs-JS-fallback selection internally when
+  // useBarCodeDetectorIfSupported is set; this just surfaces which path
+  // we're on. Safe to read directly (no effect needed): this modal only
+  // ever mounts client-side, after a user clicks "Scan Barcode".
+  const usingNativeDetector = typeof window !== 'undefined' && 'BarcodeDetector' in window
   const detectedRef = useRef(false)
   const onDetectedRef = useRef(onDetected)
   useEffect(() => { onDetectedRef.current = onDetected })
+
+  // Fires for both camera detections and manual-entry fallback: logs (for
+  // debugging exactly what the request asked for), buzzes, beeps, flashes
+  // green, then a brief moment later hands the code up to the parent.
+  const handleSuccess = useCallback((code: string, format?: string) => {
+    if (detectedRef.current) return
+    detectedRef.current = true
+    console.log('[BarcodeScanner] Detected:', code, format ? `(${format})` : '')
+    if (navigator.vibrate) navigator.vibrate(100)
+    playBarcodeDetectedTone()
+    setFlash(true)
+    setTimeout(() => onDetectedRef.current(code), 280)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -2180,16 +2222,44 @@ function BarcodeScannerModal({ onDetected, onClose }: {
         const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode')
         if (cancelled) return
         scannerInstance = new Html5Qrcode(BARCODE_VIEWPORT_ID, {
-          formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.UPC_A],
+          // Point 1: standard retail 1D formats explicitly enabled, plus QR.
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+          // Point 4: use the native BarcodeDetector API when available,
+          // falling back to the bundled JS (ZXing) decoder otherwise.
+          useBarCodeDetectorIfSupported: true,
           verbose: false,
         })
+        // Point 2: request an ideal 1280x720 feed with continuous autofocus.
+        // videoConstraints (when present) fully replaces the constraints
+        // html5-qrcode would otherwise derive from the first `start()` arg,
+        // so facingMode has to live in here too, not split across both.
+        const videoConstraints: MediaTrackConstraints = {
+          facingMode,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          // focusMode isn't part of the standard constraint set TS knows
+          // about, but Chrome/Android honor it via `advanced`; ignored
+          // harmlessly where unsupported.
+          advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet],
+        }
         await scannerInstance.start(
           { facingMode },
-          { fps: 10, qrbox: { width: 270, height: 150 } },
-          (decodedText: string) => {
-            if (detectedRef.current) return
-            detectedRef.current = true
-            onDetectedRef.current(decodedText)
+          {
+            fps: 15,
+            qrbox: { width: 300, height: 160 },
+            videoConstraints,
+          },
+          // Point 3: success callback — fires on every continuously-scanned
+          // frame that decodes; logging/haptics/audio happen in handleSuccess.
+          (decodedText: string, result: { result?: { format?: { formatName?: string } } }) => {
+            handleSuccess(decodedText, result?.result?.format?.formatName)
           },
           () => { /* per-frame "no barcode in view" — fires continuously, not an error */ }
         )
@@ -2212,14 +2282,27 @@ function BarcodeScannerModal({ onDetected, onClose }: {
         scannerInstance.stop().then(() => scannerInstance.clear()).catch(() => {})
       }
     }
-  }, [facingMode])
+  }, [facingMode, handleSuccess])
+
+  const submitManualCode = (e: React.FormEvent) => {
+    e.preventDefault()
+    const code = manualCode.trim()
+    if (!code) return
+    handleSuccess(code, 'manual entry')
+  }
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col" style={{ backgroundColor: '#0A0A0A' }}>
+      {/* Point 5: green flash on successful detection */}
+      {flash && (
+        <div className="fixed inset-0 z-[90] pointer-events-none" style={{ backgroundColor: 'rgba(34,165,89,0.35)', animation: 'ic-scan-flash 280ms ease-out' }} />
+      )}
+      <style>{`@keyframes ic-scan-flash { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }`}</style>
+
       <div className="flex items-center justify-between px-5 py-4">
         <div>
           <p className="text-white font-black uppercase tracking-widest text-sm">Scan Barcode</p>
-          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>Hold steady over a UPC-A or EAN-13 barcode</p>
+          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>UPC-A, UPC-E, EAN-13, EAN-8, Code 128, or QR</p>
         </div>
         <button
           onClick={onClose}
@@ -2241,6 +2324,11 @@ function BarcodeScannerModal({ onDetected, onClose }: {
             <p className="text-sm font-medium text-white">Starting camera…</p>
           </div>
         )}
+        {!starting && !error && (
+          <p className="absolute bottom-3 left-0 right-0 text-center text-[10px] font-bold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.4)' }}>
+            {usingNativeDetector ? 'Using device barcode scanner' : 'Using built-in scanner'}
+          </p>
+        )}
         {error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
             <p className="text-sm font-medium text-white">{error}</p>
@@ -2249,18 +2337,41 @@ function BarcodeScannerModal({ onDetected, onClose }: {
         )}
       </div>
 
-      <div className="flex items-center justify-center gap-3 px-5 py-6">
-        <button
-          onClick={() => setFacingMode(f => f === 'environment' ? 'user' : 'environment')}
-          className="flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
-          style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
-        >🔄 Flip Camera</button>
-        <button
-          onClick={onClose}
-          className="px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
-          style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
-        >Cancel</button>
-      </div>
+      {/* Point 5: manual-entry fallback for a damaged/unreadable barcode */}
+      {manualOpen ? (
+        <form onSubmit={submitManualCode} className="flex items-center gap-2 px-5 py-4">
+          <input
+            type="text"
+            inputMode="numeric"
+            autoFocus
+            value={manualCode}
+            onChange={e => setManualCode(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder="Enter barcode digits…"
+            className="flex-1 min-w-0 rounded-2xl px-4 py-3 text-base focus:outline-none bg-white"
+            style={{ color: IC.green }}
+          />
+          <button type="submit" disabled={!manualCode.trim()} className="px-4 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150 disabled:opacity-40" style={{ backgroundColor: IC.gold, color: IC.green }}>Use</button>
+          <button type="button" onClick={() => setManualOpen(false)} className="px-3 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150" style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}>✕</button>
+        </form>
+      ) : (
+        <div className="flex items-center justify-center gap-3 px-5 py-6 flex-wrap">
+          <button
+            onClick={() => setFacingMode(f => f === 'environment' ? 'user' : 'environment')}
+            className="flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
+            style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
+          >🔄 Flip Camera</button>
+          <button
+            onClick={() => setManualOpen(true)}
+            className="flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
+            style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
+          >⌨️ Enter Manually</button>
+          <button
+            onClick={onClose}
+            className="px-5 py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-150"
+            style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: 'white' }}
+          >Cancel</button>
+        </div>
+      )}
     </div>
   )
 }
