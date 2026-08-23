@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { collection, doc, setDoc, updateDoc, onSnapshot, getDoc, getDocs, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { subscribeInventory, updateInventoryStatus, putAwayItem, createInventoryItem, lookupBarcode } from '@/lib/inventory'
+import { subscribeInventory, updateInventoryStatus, deleteInventoryItem, putAwayItem, createInventoryItem, lookupBarcode } from '@/lib/inventory'
 import type { OpenFoodFactsLookup } from '@/lib/inventory'
 import type { KrogerLocation, KrogerProduct, CostcoProduct, Product, StoreType, CartItem, CartReplacement, HistoryItem, SharedItem, Dispatch, Shopper, LiveDispatch, FamilyMember, MemberRole, InventoryItem, InventoryStatus, InventoryStore } from '@/lib/types'
 
@@ -13,7 +13,6 @@ const FAVORITES_KEY = 'ic-favorites'
 const STORE_KEY = 'ic-store'
 const STORE_TYPE_KEY = 'ic-store-type'
 const DISPATCHES_KEY = 'ic-dispatches'
-const COUNTER_KEY = 'ic-dispatch-counters'
 const FAMILY_ID_KEY = 'ic-family-id'
 const MEMBER_ID_KEY = 'ic-member-id'
 const MEMBER_NAME_KEY = 'ic-member-name'
@@ -63,15 +62,59 @@ function loadDispatches(): Dispatch[] | null {
 function saveDispatches(d: Dispatch[]) {
   try { localStorage.setItem(DISPATCHES_KEY, JSON.stringify(d)) } catch { /* ignore */ }
 }
-function loadCounters(): Record<StoreType, number> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(COUNTER_KEY) ?? 'null')
-    if (raw && typeof raw === 'object') return { kroger: raw.kroger ?? 2, costco: raw.costco ?? 2 }
-  } catch { /* ignore */ }
-  return { kroger: 2, costco: 2 }
+
+// Exactly one active (unsent) cart per store — already-sent dispatches
+// (order history) are untouched and can be any number.
+function ensureDraftDispatch(list: Dispatch[], storeType: StoreType): { list: Dispatch[]; id: string } {
+  const existing = list.find(d => d.store === storeType && !d.firestoreId)
+  if (existing) return { list, id: existing.id }
+  const fresh: Dispatch = {
+    id: `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: `${STORE_LABEL[storeType]} Cart`,
+    store: storeType,
+    cart: [],
+    note: '',
+  }
+  return { list: [...list, fresh], id: fresh.id }
 }
-function saveCounters(c: Record<StoreType, number>) {
-  try { localStorage.setItem(COUNTER_KEY, JSON.stringify(c)) } catch { /* ignore */ }
+
+// One-time migration for anyone with leftover draft carts from before carts
+// were simplified to exactly one per store — merges their items (summing
+// quantities for the same product) into a single draft instead of silently
+// dropping any of them.
+function collapseDraftsToOne(list: Dispatch[]): Dispatch[] {
+  const sent = list.filter(d => d.firestoreId)
+  const drafts = list.filter(d => !d.firestoreId)
+  const byStore = new Map<StoreType, Dispatch[]>()
+  for (const d of drafts) {
+    if (!byStore.has(d.store)) byStore.set(d.store, [])
+    byStore.get(d.store)!.push(d)
+  }
+  const merged: Dispatch[] = []
+  for (const group of byStore.values()) {
+    const [first, ...rest] = group
+    let cart = first.cart
+    for (const extra of rest) {
+      for (const item of extra.cart) {
+        const existing = cart.find(i => i.product.id === item.product.id)
+        cart = existing
+          ? cart.map(i => i.product.id === item.product.id ? { ...i, quantity: Math.min(i.quantity + item.quantity, 20) } : i)
+          : [...cart, item]
+      }
+    }
+    merged.push({ ...first, cart })
+  }
+  return [...sent, ...merged]
+}
+
+// Adds a product to a cart, or — if it's already there — just refreshes its
+// restockStatus tag rather than creating a duplicate line item.
+function upsertCartItem(cart: CartItem[], product: Product, restockStatus?: 'running_low' | 'out_of_stock'): CartItem[] {
+  const existing = cart.find(i => i.product.id === product.id)
+  if (existing) {
+    return cart.map(i => i.product.id === product.id ? { ...i, ...(restockStatus ? { restockStatus } : {}) } : i)
+  }
+  return [...cart, { product, quantity: 1, note: '', ...(restockStatus ? { restockStatus } : {}) }]
 }
 
 // ── Product normalization ────────────────────────────────────────────────────
@@ -733,7 +776,7 @@ function AdminPanel({ familyId, members, currentMemberId, onClose }: {
 function HomeScreen({
   krogerLocation, activeStoreType, dispatches, activeDispatchId, shoppers, liveProgress,
   memberName, memberRoles, isAdmin,
-  onChangeStoreType, onChangeStore, onOpenDispatch, onAddDispatch, onDeleteDispatch, onClearAllDispatches, onManageFamily, onLogout, onOpenPantry, onPutAway,
+  onChangeStoreType, onChangeStore, onOpenDispatch, onDeleteDispatch, onManageFamily, onLogout, onOpenPantry, onPutAway,
 }: {
   krogerLocation: KrogerLocation | null
   activeStoreType: StoreType
@@ -747,17 +790,16 @@ function HomeScreen({
   onChangeStoreType: (t: StoreType) => void
   onChangeStore: () => void
   onOpenDispatch: (id: string) => void
-  onAddDispatch: () => void
   onDeleteDispatch: (id: string) => void
-  onClearAllDispatches: (t: StoreType) => void
   onManageFamily: () => void
   onLogout: () => void
   onOpenPantry: () => void
   onPutAway: (id: string) => void
 }) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
-  const [confirmClearAll, setConfirmClearAll] = useState(false)
   const storeDispatches = dispatches.filter(d => d.store === activeStoreType)
+  const activeCart = storeDispatches.find(d => d.id === activeDispatchId) ?? storeDispatches.find(d => !d.firestoreId)
+  const orderHistory = storeDispatches.filter(d => d.firestoreId)
   const accent = STORE_ACCENT[activeStoreType]
 
   return (
@@ -891,113 +933,116 @@ function HomeScreen({
           )}
         </div>
 
-        {/* Dispatches */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>{STORE_LABEL[activeStoreType]} Dispatches</p>
-            {storeDispatches.length > 1 && (
-              <button
-                onClick={() => setConfirmClearAll(true)}
-                className="text-xs font-bold active:scale-95 transition-all duration-100"
-                style={{ color: '#EF4444' }}
-              >Clear All</button>
-            )}
-          </div>
-          <div className="space-y-2">
-            {storeDispatches.map(d => {
-              const itemCount = d.cart.reduce((n, i) => n + i.quantity, 0)
-              const total = d.cart.reduce((sum, i) => sum + i.product.price * i.quantity, 0)
-              const isActive = d.id === activeDispatchId
-              const progress = d.firestoreId ? liveProgress[d.id] : null
-              const isDelivered = progress?.status === 'complete' || progress?.status === 'archived'
+        {/* Active cart — exactly one per store, always */}
+        {activeCart && (
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-3" style={{ color: IC.textMuted }}>Your {STORE_LABEL[activeStoreType]} Cart</p>
+            {(() => {
+              const itemCount = activeCart.cart.reduce((n, i) => n + i.quantity, 0)
+              const total = activeCart.cart.reduce((sum, i) => sum + i.product.price * i.quantity, 0)
               return (
-                <div
-                  key={d.id}
-                  className="w-full bg-white rounded-2xl px-5 py-4 flex items-center justify-between text-left transition-all duration-150 shadow-sm cursor-pointer active:scale-[0.98]"
-                  style={{ border: isActive ? `2px solid ${IC.gold}` : '1px solid #E5DDD0' }}
-                  onClick={() => { setPendingDeleteId(null); onOpenDispatch(d.id) }}
+                <button
+                  onClick={() => onOpenDispatch(activeCart.id)}
+                  className="w-full bg-white rounded-2xl px-5 py-4 flex items-center justify-between text-left transition-all duration-150 shadow-sm active:scale-[0.98]"
+                  style={{ border: `2px solid ${IC.gold}` }}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
-                      <StoreTag store={d.store} />
-                      {d.shopperName && (
-                        <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${IC.gold}20`, color: IC.gold }}>
-                          → {d.shopperName}
-                        </span>
+                      <p className="font-bold text-base" style={{ color: IC.green }}>{activeCart.name}</p>
+                      <StoreTag store={activeCart.store} />
+                    </div>
+                    <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
+                      {itemCount === 0
+                        ? 'Empty — tap to start adding items'
+                        : `${itemCount} item${itemCount !== 1 ? 's' : ''}${total > 0 ? ` · $${total.toFixed(2)} est.` : ''}`}
+                    </p>
+                  </div>
+                  <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              )
+            })()}
+          </div>
+        )}
+
+        {/* Order history — past/in-flight dispatches already sent to a shopper */}
+        {orderHistory.length > 0 && (
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-3" style={{ color: IC.textMuted }}>{STORE_LABEL[activeStoreType]} Order History</p>
+            <div className="space-y-2">
+              {orderHistory.map(d => {
+                const progress = liveProgress[d.id]
+                const isDelivered = progress?.status === 'complete' || progress?.status === 'archived'
+                return (
+                  <div
+                    key={d.id}
+                    className="w-full bg-white rounded-2xl px-5 py-4 shadow-sm"
+                    style={{ border: '1px solid #E5DDD0' }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-bold text-base" style={{ color: IC.green }}>{d.name}</p>
+                          {d.shopperName && (
+                            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ backgroundColor: `${IC.gold}20`, color: IC.gold }}>
+                              → {d.shopperName}
+                            </span>
+                          )}
+                        </div>
+                        {isDelivered && !d.putAwayAt ? (
+                          <button
+                            onClick={() => onPutAway(d.id)}
+                            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider text-white transition-all duration-150 active:scale-95"
+                            style={{ backgroundColor: IC.green }}
+                          >
+                            📦 Put Away Groceries
+                          </button>
+                        ) : isDelivered && d.putAwayAt ? (
+                          <p className="text-xs font-bold mt-1.5" style={{ color: IC.textMuted }}>✓ Put away {timeAgo(new Date(d.putAwayAt).toISOString())}</p>
+                        ) : progress ? (
+                          <div className="mt-1.5">
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: '#E5DDD0' }}>
+                                <div
+                                  className="h-full rounded-full transition-all duration-500"
+                                  style={{ width: `${progress.total > 0 ? (progress.checked / progress.total) * 100 : 0}%`, backgroundColor: IC.gold }}
+                                />
+                              </div>
+                              <span className="text-xs font-bold flex-shrink-0" style={{ color: IC.textMuted }}>
+                                {progress.checked}/{progress.total}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>Sent — waiting on your shopper</p>
+                        )}
+                      </div>
+                      {pendingDeleteId === d.id ? (
+                        <button
+                          onClick={() => { onDeleteDispatch(d.id); setPendingDeleteId(null) }}
+                          className="text-xs font-black px-2.5 py-1 rounded-xl active:scale-95 transition-all duration-100 flex-shrink-0"
+                          style={{ backgroundColor: '#FEE2E2', color: '#EF4444' }}
+                        >Delete?</button>
+                      ) : (
+                        <button
+                          onClick={() => setPendingDeleteId(d.id)}
+                          className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100 flex-shrink-0"
+                          style={{ backgroundColor: IC.cream }}
+                          aria-label="Remove from history"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="#9B8470" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
                       )}
                     </div>
-                    {isDelivered && !d.putAwayAt ? (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onPutAway(d.id) }}
-                        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-wider text-white transition-all duration-150 active:scale-95"
-                        style={{ backgroundColor: IC.green }}
-                      >
-                        📦 Put Away Groceries
-                      </button>
-                    ) : isDelivered && d.putAwayAt ? (
-                      <p className="text-xs font-bold mt-1.5" style={{ color: IC.textMuted }}>✓ Put away {timeAgo(new Date(d.putAwayAt).toISOString())}</p>
-                    ) : progress ? (
-                      <div className="mt-1.5">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: '#E5DDD0' }}>
-                            <div
-                              className="h-full rounded-full transition-all duration-500"
-                              style={{ width: `${progress.total > 0 ? (progress.checked / progress.total) * 100 : 0}%`, backgroundColor: IC.gold }}
-                            />
-                          </div>
-                          <span className="text-xs font-bold flex-shrink-0" style={{ color: IC.textMuted }}>
-                            {progress.checked}/{progress.total}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>
-                        {itemCount === 0
-                          ? 'Empty — tap to start adding items'
-                          : `${itemCount} item${itemCount !== 1 ? 's' : ''}${total > 0 ? ` · $${total.toFixed(2)} est.` : ''}`}
-                      </p>
-                    )}
                   </div>
-                  <div className="flex items-center gap-1.5 flex-shrink-0 ml-3">
-                    {pendingDeleteId === d.id ? (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onDeleteDispatch(d.id); setPendingDeleteId(null) }}
-                        className="text-xs font-black px-2.5 py-1 rounded-xl active:scale-95 transition-all duration-100"
-                        style={{ backgroundColor: '#FEE2E2', color: '#EF4444' }}
-                      >Delete?</button>
-                    ) : (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setPendingDeleteId(d.id) }}
-                        className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
-                        style={{ backgroundColor: IC.cream }}
-                        aria-label="Delete dispatch"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="#9B8470" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
-                    )}
-                    <svg className="w-5 h-5" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
-                </div>
-              )
-            })}
-
-            <button
-              onClick={onAddDispatch}
-              className="w-full rounded-2xl px-5 py-4 flex items-center gap-2 transition-all duration-150 active:scale-[0.98]"
-              style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-              </svg>
-              <span className="font-bold text-sm">New Dispatch</span>
-            </button>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
         <button
           onClick={() => onOpenDispatch(activeDispatchId)}
@@ -1007,35 +1052,6 @@ function HomeScreen({
           Start Shopping →
         </button>
       </div>
-
-      {confirmClearAll && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmClearAll(false)} />
-          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm p-7 text-center">
-            <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4" style={{ backgroundColor: '#FEE2E2' }}>
-              <svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </div>
-            <p className="font-black text-lg uppercase tracking-wider mb-2" style={{ color: IC.green }}>Delete All {STORE_LABEL[activeStoreType]} Dispatches?</p>
-            <p className="text-sm mb-6" style={{ color: IC.textMuted }}>
-              All {storeDispatches.length} {STORE_LABEL[activeStoreType]} dispatches will be permanently deleted. This cannot be undone.
-            </p>
-            <div className="space-y-2">
-              <button
-                onClick={() => { onClearAllDispatches(activeStoreType); setConfirmClearAll(false) }}
-                className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
-                style={{ backgroundColor: '#EF4444' }}
-              >Delete All</button>
-              <button
-                onClick={() => setConfirmClearAll(false)}
-                className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
-                style={{ backgroundColor: IC.cream, color: IC.green }}
-              >Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -1420,14 +1436,12 @@ function ReplacementPanel({
 // ── CartPanel ─────────────────────────────────────────────────────────────────
 
 function CartPanel({
-  dispatch, canDelete, onRename, onDeleteDispatch,
+  dispatch, onClearCart,
   onClose, onUpdateQty, onUpdateNote, onRemove, onSendDispatch,
   onAddReplacement, onRemoveReplacement, onSetNote, onSetTip, liveCheckedItems,
 }: {
   dispatch: Dispatch
-  canDelete: boolean
-  onRename: (name: string) => void
-  onDeleteDispatch: () => void
+  onClearCart: () => void
   onClose: () => void
   onUpdateQty: (id: string, qty: number) => void
   onUpdateNote: (id: string, note: string) => void
@@ -1455,25 +1469,19 @@ function CartPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <StoreTag store={dispatch.store} />
             </div>
-            <input
-              value={dispatch.name}
-              onChange={(e) => onRename(e.target.value)}
-              className="text-xl font-black uppercase tracking-wider bg-transparent focus:outline-none w-full border-b-2 transition-colors duration-150"
-              style={{ color: IC.green, borderColor: 'transparent' }}
-              onFocus={e => (e.currentTarget.style.borderColor = IC.gold)}
-              onBlur={e => (e.currentTarget.style.borderColor = 'transparent')}
-            />
+            <p className="text-xl font-black uppercase tracking-wider" style={{ color: IC.green }}>{dispatch.name}</p>
             {dispatch.cart.length > 0 && (
               <p className="text-sm font-medium mt-0.5" style={{ color: IC.textMuted }}>{dispatch.cart.reduce((n, i) => n + i.quantity, 0)} items</p>
             )}
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {canDelete && (
+            {dispatch.cart.length > 0 && (
               <button
-                onClick={onDeleteDispatch}
+                onClick={onClearCart}
                 className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
                 style={{ backgroundColor: '#FEE2E2' }}
-                aria-label="Delete dispatch"
+                aria-label="Clear cart"
+                title="Clear cart"
               >
                 <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1787,6 +1795,42 @@ function AddShopperModal({ onAdd, onClose }: {
   )
 }
 
+// ── Toast ─────────────────────────────────────────────────────────────────────
+// Lightweight bottom snackbar — used for the Pantry's "already in cart" /
+// "add to cart?" confirmations instead of a silent auto-add.
+
+function Toast({ message, actionLabel, onAction, onDismiss }: {
+  message: string
+  actionLabel?: string
+  onAction?: () => void
+  onDismiss: () => void
+}) {
+  useEffect(() => {
+    const t = setTimeout(onDismiss, actionLabel ? 6000 : 3000)
+    return () => clearTimeout(t)
+  }, [onDismiss, actionLabel])
+
+  return (
+    <div className="fixed bottom-6 left-4 right-4 z-[95] flex justify-center pointer-events-none">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl px-5 py-4 flex items-center gap-3 pointer-events-auto" style={{ border: '1px solid #E5DDD0' }}>
+        <p className="flex-1 text-sm font-medium" style={{ color: IC.green }}>{message}</p>
+        {actionLabel && onAction && (
+          <button
+            onClick={() => { onAction(); onDismiss() }}
+            className="flex-shrink-0 px-3.5 py-2 rounded-xl font-black text-xs uppercase tracking-wider text-white active:scale-95 transition-all duration-150"
+            style={{ backgroundColor: IC.green }}
+          >{actionLabel}</button>
+        )}
+        <button onClick={onDismiss} className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100" style={{ backgroundColor: IC.cream }} aria-label="Dismiss">
+          <svg className="w-3 h-3" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── CustomItemModal ───────────────────────────────────────────────────────────
 // Fallback for when Costco search doesn't have what the user's looking for —
 // lets them add a freeform line item straight into the Costco dispatch cart.
@@ -1874,9 +1918,10 @@ function CustomItemModal({ initialName, onAdd, onClose }: {
 
 // ── PantryItemRow ─────────────────────────────────────────────────────────────
 
-function PantryItemRow({ item, onSetStatus }: {
+function PantryItemRow({ item, onSetStatus, onRequestDelete }: {
   item: InventoryItem
   onSetStatus: (item: InventoryItem, status: InventoryStatus) => void
+  onRequestDelete: (item: InventoryItem) => void
 }) {
   return (
     <li className="bg-white rounded-2xl p-3 flex items-center gap-3" style={{ border: '1px solid #E5DDD0' }}>
@@ -1917,6 +1962,17 @@ function PantryItemRow({ item, onSetStatus }: {
             >{cfg.emoji}</button>
           )
         })}
+        <button
+          onClick={() => onRequestDelete(item)}
+          className="w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-150"
+          style={{ backgroundColor: IC.cream }}
+          aria-label="Delete item"
+          title="Delete item"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="#9B8470" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
       </div>
     </li>
   )
@@ -1924,16 +1980,18 @@ function PantryItemRow({ item, onSetStatus }: {
 
 // ── PantryView ────────────────────────────────────────────────────────────────
 
-function PantryView({ items, loading, error, onClose, onSetStatus, onAddItem }: {
+function PantryView({ items, loading, error, onClose, onSetStatus, onAddItem, onDeleteItem }: {
   items: InventoryItem[]
   loading: boolean
   error: string
   onClose: () => void
   onSetStatus: (item: InventoryItem, status: InventoryStatus) => void
   onAddItem: () => void
+  onDeleteItem: (item: InventoryItem) => void
 }) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | InventoryStatus>('all')
+  const [confirmDeleteItem, setConfirmDeleteItem] = useState<InventoryItem | null>(null)
 
   const filtered = items.filter(i =>
     (statusFilter === 'all' || i.status === statusFilter) &&
@@ -2046,11 +2104,38 @@ function PantryView({ items, loading, error, onClose, onSetStatus, onAddItem }: 
         {filtered.length > 0 && (
           <ul className="space-y-2">
             {filtered.map(item => (
-              <PantryItemRow key={item.id} item={item} onSetStatus={onSetStatus} />
+              <PantryItemRow key={item.id} item={item} onSetStatus={onSetStatus} onRequestDelete={setConfirmDeleteItem} />
             ))}
           </ul>
         )}
       </main>
+
+      {confirmDeleteItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmDeleteItem(null)} />
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm p-7 text-center">
+            <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4" style={{ backgroundColor: '#FEE2E2' }}>
+              <svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <p className="font-black text-lg uppercase tracking-wider mb-2" style={{ color: IC.green }}>Delete {confirmDeleteItem.name} from Pantry?</p>
+            <p className="text-sm mb-6" style={{ color: IC.textMuted }}>This cannot be undone.</p>
+            <div className="space-y-2">
+              <button
+                onClick={() => { onDeleteItem(confirmDeleteItem); setConfirmDeleteItem(null) }}
+                className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97] text-white"
+                style={{ backgroundColor: '#EF4444' }}
+              >Delete</button>
+              <button
+                onClick={() => setConfirmDeleteItem(null)}
+                className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest uppercase transition-all duration-150 active:scale-[0.97]"
+                style={{ backgroundColor: IC.cream, color: IC.green }}
+              >Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2740,10 +2825,10 @@ export default function ShoppingApp() {
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
 
-  const [dispatches, setDispatches] = useState<Dispatch[]>([{ id: 'dispatch-1', name: 'Kroger Dispatch 1', store: 'kroger', cart: [], note: '' }])
+  const [dispatches, setDispatches] = useState<Dispatch[]>([{ id: 'dispatch-1', name: 'Kroger Cart', store: 'kroger', cart: [], note: '' }])
   const [activeDispatchId, setActiveDispatchId] = useState<string>('dispatch-1')
   const [cartOpen, setCartOpen] = useState(false)
-  const dispatchCounters = useRef<Record<StoreType, number>>({ kroger: 2, costco: 2 })
+  const [toast, setToast] = useState<{ message: string; actionLabel?: string; onAction?: () => void } | null>(null)
 
   const [shoppers, setShoppers] = useState<Shopper[]>([])
   const [shopperPickerOpen, setShopperPickerOpen] = useState(false)
@@ -2770,14 +2855,13 @@ export default function ShoppingApp() {
     const savedStore = loadStore()
     const savedStoreType = loadStoreType()
     const savedDispatches = loadDispatches()
-    const savedCounters = loadCounters()
     if (savedStore) setStore(savedStore)
     setActiveStoreType(savedStoreType)
-    dispatchCounters.current = savedCounters
     if (savedDispatches && savedDispatches.length > 0) {
-      setDispatches(savedDispatches)
-      const forActiveType = savedDispatches.find(d => d.store === savedStoreType)
-      setActiveDispatchId((forActiveType ?? savedDispatches[0]).id)
+      const collapsed = collapseDraftsToOne(savedDispatches)
+      const { list, id } = ensureDraftDispatch(collapsed, savedStoreType)
+      setDispatches(list)
+      setActiveDispatchId(id)
     }
     // Check family session
     const fid = localStorage.getItem(FAMILY_ID_KEY)
@@ -2889,16 +2973,9 @@ export default function ShoppingApp() {
     setActiveStoreType(type)
     saveStoreType(type)
     setDispatches(prev => {
-      const existing = prev.find(d => d.store === type)
-      if (existing) {
-        setActiveDispatchId(existing.id)
-        return prev
-      }
-      const n = dispatchCounters.current[type]++
-      saveCounters(dispatchCounters.current)
-      const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[type]} Dispatch ${n}`, store: type, cart: [], note: '' }
-      setActiveDispatchId(fresh.id)
-      return [...prev, fresh]
+      const { list, id } = ensureDraftDispatch(prev, type)
+      setActiveDispatchId(id)
+      return list
     })
     setShoppingActive(false)
     setSearchQuery(''); setProducts([]); setSearchStart(0); setSearchTotal(0)
@@ -2980,25 +3057,8 @@ export default function ShoppingApp() {
   // independent of whichever dispatch/tab the user currently has open.
   const upsertRestockItem = useCallback((storeType: StoreType, product: Product, restockStatus: 'running_low' | 'out_of_stock') => {
     setDispatches(prev => {
-      let next = prev
-      let target = next.find(d => d.store === storeType && !d.firestoreId)
-      if (!target) {
-        const n = dispatchCounters.current[storeType]++
-        saveCounters(dispatchCounters.current)
-        target = { id: `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: `${STORE_LABEL[storeType]} Dispatch ${n}`, store: storeType, cart: [], note: '' }
-        next = [...next, target]
-      }
-      const targetId = target.id
-      return next.map(d => {
-        if (d.id !== targetId) return d
-        const existing = d.cart.find(i => i.product.id === product.id)
-        return {
-          ...d,
-          cart: existing
-            ? d.cart.map(i => i.product.id === product.id ? { ...i, restockStatus } : i)
-            : [...d.cart, { product, quantity: 1, note: '', restockStatus }],
-        }
-      })
+      const { list, id } = ensureDraftDispatch(prev, storeType)
+      return list.map(d => d.id === id ? { ...d, cart: upsertCartItem(d.cart, product, restockStatus) } : d)
     })
   }, [])
 
@@ -3014,26 +3074,43 @@ export default function ShoppingApp() {
     })
   }, [])
 
+  // Running Low / Out of Stock -> Add to Cart flow: never adds silently —
+  // tells the user what's already in their cart, or offers a one-tap add.
   const handleSetInventoryStatus = useCallback(async (item: InventoryItem, status: InventoryStatus) => {
     try {
       const updated = await updateInventoryStatus(item.id, status)
       mergeInventoryItems([updated])
       if ((status === 'running_low' || status === 'out_of_stock') && (item.store === 'kroger' || item.store === 'costco')) {
-        const product: Product = {
-          id: item.original_product_id || item.id,
-          store: item.store,
-          name: item.name,
-          brand: item.brand || '',
-          image: item.image_url || '',
-          price: item.unit_price || 0,
-          size: item.size || '',
+        const storeType = item.store
+        const productId = item.original_product_id || item.id
+        const storeLabel = STORE_LABEL[storeType]
+        const activeCart = dispatches.find(d => d.store === storeType && !d.firestoreId)
+        const alreadyInCart = activeCart?.cart.some(i => i.product.id === productId) ?? false
+        if (alreadyInCart) {
+          setToast({ message: `${item.name} is already in your ${storeLabel} cart.` })
+        } else {
+          setToast({
+            message: `${item.name} marked ${STATUS_CONFIG[status].label}. Add to ${storeLabel} cart?`,
+            actionLabel: 'Add to Cart',
+            onAction: () => {
+              const product: Product = {
+                id: productId,
+                store: storeType,
+                name: item.name,
+                brand: item.brand || '',
+                image: item.image_url || '',
+                price: item.unit_price || 0,
+                size: item.size || '',
+              }
+              upsertRestockItem(storeType, product, status)
+            },
+          })
         }
-        upsertRestockItem(item.store, product, status)
       }
     } catch (e) {
       setInventoryError(e instanceof Error ? e.message : 'Failed to update pantry status')
     }
-  }, [upsertRestockItem, mergeInventoryItems])
+  }, [upsertRestockItem, mergeInventoryItems, dispatches])
 
   // "Put Away Groceries" ingestion: upserts each checked cart item into
   // inventory_items (status in_stock, last_restocked_at refreshed), then
@@ -3070,6 +3147,15 @@ export default function ShoppingApp() {
     mergeInventoryItems([created])
   }, [mergeInventoryItems])
 
+  const handleDeleteInventoryItem = useCallback(async (item: InventoryItem) => {
+    try {
+      await deleteInventoryItem(item.id)
+      setInventoryItems(prev => prev.filter(i => i.id !== item.id))
+    } catch (e) {
+      setInventoryError(e instanceof Error ? e.message : 'Failed to delete pantry item')
+    }
+  }, [])
+
   const removeFromCart = useCallback((productId: string) => {
     updateActiveDispatch(d => ({ ...d, cart: d.cart.filter(i => i.product.id !== productId) }))
   }, [updateActiveDispatch])
@@ -3092,57 +3178,21 @@ export default function ShoppingApp() {
     updateActiveDispatch(d => ({ ...d, cart: d.cart.map(i => i.product.id === productId ? { ...i, replacement: undefined } : i) }))
   }, [updateActiveDispatch])
 
-  const addDispatch = useCallback(() => {
-    const type = activeStoreType
-    const num = dispatchCounters.current[type]++
-    saveCounters(dispatchCounters.current)
-    const d: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[type]} Dispatch ${num}`, store: type, cart: [], note: '' }
-    setDispatches(prev => [...prev, d])
-    setActiveDispatchId(d.id)
-    setShoppingActive(true)
-  }, [activeStoreType])
+  // Empties the current store's single active cart in place — there's
+  // always exactly one draft per store, so "clear" resets it rather than
+  // deleting/recreating a dispatch.
+  const clearActiveCart = useCallback(() => {
+    updateActiveDispatch(d => ({ ...d, cart: [], note: '', tip: undefined }))
+  }, [updateActiveDispatch])
 
-  const renameDispatch = useCallback((id: string, name: string) => {
-    setDispatches(prev => prev.map(d => d.id === id ? { ...d, name } : d))
-  }, [])
-
-  const deleteDispatch = useCallback((id: string) => {
+  // Removes a sent dispatch from order history (and Firestore, if it was
+  // actually sent). Never touches the active draft cart.
+  const deleteHistoryDispatch = useCallback((id: string) => {
     const target = dispatches.find(d => d.id === id)
     if (!target) return
-    setDispatches(prev => {
-      const sameType = prev.filter(d => d.store === target.store)
-      if (sameType.length <= 1) {
-        // Reset the last dispatch of this store type to empty instead of removing it
-        const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[target.store]} Dispatch 1`, store: target.store, cart: [], note: '' }
-        dispatchCounters.current[target.store] = 2
-        saveCounters(dispatchCounters.current)
-        if (id === activeDispatchId) setActiveDispatchId(fresh.id)
-        return prev.map(d => d.id === id ? fresh : d)
-      }
-      const next = prev.filter(d => d.id !== id)
-      if (id === activeDispatchId) {
-        const fallback = next.find(d => d.store === target.store)!
-        setActiveDispatchId(fallback.id)
-      }
-      return next
-    })
-    // Also delete from Firestore if it was sent
+    setDispatches(prev => prev.filter(d => d.id !== id))
     if (target.firestoreId) deleteDoc(doc(db, 'dispatches', target.firestoreId)).catch(() => {})
-  }, [activeDispatchId, dispatches])
-
-  const clearAllDispatches = useCallback((type: StoreType) => {
-    dispatches.filter(d => d.store === type).forEach(d => {
-      if (d.firestoreId) deleteDoc(doc(db, 'dispatches', d.firestoreId)).catch(() => {})
-    })
-    const fresh: Dispatch = { id: `dispatch-${Date.now()}`, name: `${STORE_LABEL[type]} Dispatch 1`, store: type, cart: [], note: '' }
-    dispatchCounters.current[type] = 2
-    saveCounters(dispatchCounters.current)
-    setDispatches(prev => [...prev.filter(d => d.store !== type), fresh])
-    if (type === activeStoreType) {
-      setActiveDispatchId(fresh.id)
-      setShoppingActive(false)
-    }
-  }, [dispatches, activeStoreType])
+  }, [dispatches])
 
   const setOrderNote = useCallback((note: string) => {
     updateActiveDispatch(d => ({ ...d, note }))
@@ -3316,11 +3366,19 @@ export default function ShoppingApp() {
         await setDoc(doc(db, 'dispatches', firestoreId), liveDispatchData)
       }
 
-      setDispatches(prev => prev.map(d =>
-        d.id === activeDispatchId
-          ? { ...d, firestoreId, shopperId: shopper.id, shopperName: shopper.name, sentAt: Date.now() }
-          : d
-      ))
+      setDispatches(prev => {
+        const sent = prev.map(d =>
+          d.id === activeDispatchId
+            ? { ...d, firestoreId, shopperId: shopper.id, shopperName: shopper.name, sentAt: Date.now() }
+            : d
+        )
+        // Sending moves this cart into order history — the store's single
+        // active cart concept still needs to resolve to something, so spin
+        // up a fresh empty draft right away.
+        const { list, id } = ensureDraftDispatch(sent, activeDispatch.store)
+        setActiveDispatchId(id)
+        return list
+      })
       setShopperPickerOpen(false)
       setCartOpen(false)
       setShoppingActive(false)
@@ -3365,12 +3423,21 @@ export default function ShoppingApp() {
           onClose={() => setPantryOpen(false)}
           onSetStatus={handleSetInventoryStatus}
           onAddItem={() => setAddPantryItemOpen(true)}
+          onDeleteItem={handleDeleteInventoryItem}
         />
         {addPantryItemOpen && (
           <AddPantryItemModal
             krogerLocation={store}
             onSave={handleAddPantryItem}
             onClose={() => setAddPantryItemOpen(false)}
+          />
+        )}
+        {toast && (
+          <Toast
+            message={toast.message}
+            actionLabel={toast.actionLabel}
+            onAction={toast.onAction}
+            onDismiss={() => setToast(null)}
           />
         )}
       </>
@@ -3397,9 +3464,7 @@ export default function ShoppingApp() {
           onChangeStoreType={changeStoreType}
           onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
           onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
-          onAddDispatch={addDispatch}
-          onDeleteDispatch={deleteDispatch}
-          onClearAllDispatches={clearAllDispatches}
+          onDeleteDispatch={deleteHistoryDispatch}
           onManageFamily={() => setAdminPanelOpen(true)}
           onLogout={logout}
           onOpenPantry={() => setPantryOpen(true)}
@@ -3490,57 +3555,8 @@ export default function ShoppingApp() {
         </div>
       ) : null}
 
-      {/* Sticky area: dispatch switcher + search bar */}
+      {/* Sticky area: search bar */}
       <div className="sticky top-14 z-20 bg-white shadow-sm" style={{ borderBottom: `1px solid #E5DDD0` }}>
-        {/* Dispatch switcher */}
-        {(activeStoreType === 'costco' || store) && (
-          <div className="px-4 pt-2 overflow-x-auto" style={{ borderBottom: `1px solid #E5DDD0` }}>
-            <div className="flex gap-2 min-w-max pb-2">
-              {dispatches.filter(d => d.store === activeStoreType).map(d => {
-                const isActive = d.id === activeDispatchId
-                const count = d.cart.reduce((n, i) => n + i.quantity, 0)
-                const progress = d.firestoreId ? liveProgress[d.id] : null
-                return (
-                  <button
-                    key={d.id}
-                    onClick={() => setActiveDispatchId(d.id)}
-                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-all duration-150 active:scale-95"
-                    style={{
-                      backgroundColor: isActive ? IC.green : IC.cream,
-                      color: isActive ? 'white' : IC.green,
-                      border: isActive ? 'none' : `1px solid #E5DDD0`,
-                    }}
-                  >
-                    {d.name}
-                    {progress ? (
-                      <span
-                        className="text-xs font-black rounded-full px-1.5 h-5 flex items-center justify-center flex-shrink-0 gap-0.5"
-                        style={{ backgroundColor: isActive ? IC.gold : '#C8BFB0', color: 'white' }}
-                      >
-                        {progress.checked}/{progress.total}
-                      </span>
-                    ) : count > 0 && (
-                      <span
-                        className="text-xs font-black rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0"
-                        style={{ backgroundColor: isActive ? IC.gold : '#C8BFB0', color: 'white' }}
-                      >
-                        {count > 9 ? '9+' : count}
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
-              <button
-                onClick={addDispatch}
-                className="flex items-center gap-1 px-3.5 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-all duration-150 active:scale-95"
-                style={{ border: `1.5px dashed ${IC.gold}`, color: IC.gold }}
-              >
-                + New
-              </button>
-            </div>
-          </div>
-        )}
-
         <div className="px-4 py-3">
         <form onSubmit={(e) => { e.preventDefault(); handleSearch() }} className="max-w-3xl mx-auto">
           <div className="relative">
@@ -3747,9 +3763,7 @@ export default function ShoppingApp() {
       {cartOpen && (
         <CartPanel
           dispatch={activeDispatch}
-          canDelete={dispatches.filter(d => d.store === activeStoreType).length > 1}
-          onRename={(name) => renameDispatch(activeDispatchId, name)}
-          onDeleteDispatch={() => { deleteDispatch(activeDispatchId); setCartOpen(false) }}
+          onClearCart={clearActiveCart}
           onClose={() => setCartOpen(false)}
           onUpdateQty={updateQty}
           onUpdateNote={updateNote}

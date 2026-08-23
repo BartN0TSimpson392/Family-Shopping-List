@@ -30,6 +30,12 @@ export async function updateInventoryStatus(id: string, status: InventoryStatus)
   return data as InventoryItem
 }
 
+export async function deleteInventoryItem(id: string): Promise<void> {
+  const client = requireClient()
+  const { error } = await client.from('inventory_items').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
 export interface PutAwayInput {
   name: string
   brand: string | null
