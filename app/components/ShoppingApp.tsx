@@ -12,6 +12,8 @@ import type { KrogerLocation, KrogerProduct, CostcoProduct, Product, StoreType, 
 const HISTORY_KEY = 'ic-purchase-history'
 const FAVORITES_KEY = 'ic-favorites'
 const STORE_KEY = 'ic-store'
+const ZIP_CODE_KEY = 'ic-zip-code'
+const DEFAULT_ZIP = '48083'
 const STORE_TYPE_KEY = 'ic-store-type'
 const DISPATCHES_KEY = 'ic-dispatches'
 const FAMILY_ID_KEY = 'ic-family-id'
@@ -44,6 +46,16 @@ function loadStore(): KrogerLocation | null {
 }
 function saveStore(s: KrogerLocation | null) {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(s)) } catch { /* ignore */ }
+}
+// Unified location profile — one ZIP code drives Kroger store lookup
+// (Costco's API doesn't accept a location parameter at all, so this is
+// stored for a consistent setup experience but doesn't change Costco
+// results — see the Costco step's copy in LocationOnboardingScreen).
+function loadZipCode(): string {
+  try { return localStorage.getItem(ZIP_CODE_KEY) || DEFAULT_ZIP } catch { return DEFAULT_ZIP }
+}
+function saveZipCode(zip: string) {
+  try { localStorage.setItem(ZIP_CODE_KEY, zip) } catch { /* ignore */ }
 }
 function loadStoreType(): StoreType {
   try {
@@ -775,11 +787,12 @@ function AdminPanel({ familyId, members, currentMemberId, onClose }: {
 // ── HomeScreen ────────────────────────────────────────────────────────────────
 
 function HomeScreen({
-  krogerLocation, activeStoreType, dispatches, activeDispatchId, shoppers, liveProgress,
+  krogerLocation, zipCode, activeStoreType, dispatches, activeDispatchId, shoppers, liveProgress,
   memberName, memberRoles, isAdmin,
   onChangeStoreType, onChangeStore, onOpenDispatch, onDeleteDispatch, onManageFamily, onLogout, onOpenPantry, onPutAway,
 }: {
   krogerLocation: KrogerLocation | null
+  zipCode: string
   activeStoreType: StoreType
   dispatches: Dispatch[]
   activeDispatchId: string
@@ -815,6 +828,18 @@ function HomeScreen({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={onChangeStore}
+              className="flex items-center gap-1 rounded-full px-2.5 py-1.5 active:scale-90 transition-all duration-100"
+              style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}
+              aria-label="Change ZIP or Kroger store"
+              title="Change ZIP or Kroger store"
+            >
+              <svg className="w-3.5 h-3.5 text-white flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <span className="text-[10px] font-bold text-white hidden sm:inline">{zipCode}</span>
+            </button>
             <button
               onClick={onOpenPantry}
               className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
@@ -883,8 +908,8 @@ function HomeScreen({
         ) : (
           <div className="bg-white rounded-2xl px-5 py-4 shadow-sm" style={{ border: `1px solid #E5DDD0`, borderLeft: `3px solid ${accent}` }}>
             <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-2" style={{ color: IC.textMuted }}>Costco</p>
-            <p className="font-bold text-base" style={{ color: IC.green }}>Searching nationwide</p>
-            <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>No warehouse selection needed — results come straight from Costco.com.</p>
+            <p className="font-bold text-base" style={{ color: IC.green }}>Using your local pricing</p>
+            <p className="text-sm mt-0.5" style={{ color: IC.textMuted }}>No warehouse to pick — pricing & availability come from your ZIP code automatically.</p>
           </div>
         )}
 
@@ -1065,119 +1090,204 @@ function HomeScreen({
   )
 }
 
-// ── StorePicker ───────────────────────────────────────────────────────────────
+// ── LocationOnboardingScreen ─────────────────────────────────────────────────
+// Unified 3-step setup: ZIP code → pick a Kroger store → Costco confirmation.
+// Doubles as the mandatory first-run gate (no onClose) and as a reopenable
+// flow from the header quick-switcher (onClose lets you back out without
+// changing anything already saved).
 
-function StorePicker({
-  locationResults,
-  isLoading,
-  error,
-  onSearch,
-  onSelect,
+type OnboardingStep = 'zip' | 'kroger' | 'costco'
+const STEP_ORDER: Record<OnboardingStep, number> = { zip: 0, kroger: 1, costco: 2 }
+
+function LocationOnboardingScreen({
+  initialZip, locationResults, isLoading, error, onSearchZip, onSelectStore, onFinish, onClose,
 }: {
+  initialZip: string
   locationResults: KrogerLocation[]
   isLoading: boolean
   error: string
-  onSearch: (zip: string) => void
-  onSelect: (loc: KrogerLocation) => void
+  onSearchZip: (zip: string) => void
+  onSelectStore: (loc: KrogerLocation) => void
+  onFinish: () => void
+  onClose?: () => void
 }) {
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [step, setStep] = useState<OnboardingStep>('zip')
+  const [zipInput, setZipInput] = useState(initialZip)
+  const [selectedStore, setSelectedStore] = useState<KrogerLocation | null>(null)
 
-  const trySearch = () => {
-    const zip = (inputRef.current?.value ?? '').replace(/\D/g, '').slice(0, 5)
-    if (zip.length === 5) onSearch(zip)
+  const zipValid = /^\d{5}$/.test(zipInput)
+  const currentStepIndex = STEP_ORDER[step]
+
+  const handleSearch = () => {
+    if (!zipValid) return
+    onSearchZip(zipInput)
+    setStep('kroger')
+  }
+
+  const handleSelect = (loc: KrogerLocation) => {
+    setSelectedStore(loc)
+    onSelectStore(loc)
+    setStep('costco')
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-16" style={{ backgroundColor: IC.cream }}>
-      {/* Logo mark */}
-      <div className="mb-6">
-        <RadarLogo className="w-28 h-28" />
-      </div>
-
-      {/* Brand name */}
-      <div className="text-center mb-10">
-        <h1
-          className="text-4xl font-black tracking-[0.15em] uppercase"
-          style={{ color: IC.green }}
-        >
-          Inner Circle
-        </h1>
-        <p
-          className="text-xs font-bold tracking-[0.35em] uppercase mt-1"
-          style={{ color: IC.textMuted }}
-        >
-          Private Dispatch
-        </p>
-      </div>
-
-      {/* Zip input — white pill */}
-      <div className="w-full max-w-sm space-y-3">
-        <div className="bg-white rounded-2xl shadow-sm flex items-center px-5 py-4 gap-3 border border-stone-200">
-          {/* Mic icon */}
-          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" />
-          </svg>
-          <div className="w-px h-5 bg-stone-200 flex-shrink-0" />
-          <input
-            ref={inputRef}
-            type="tel"
-            inputMode="numeric"
-            maxLength={5}
-            onBlur={trySearch}
-            placeholder="Enter your zip code"
-            className="flex-1 text-base focus:outline-none placeholder:text-stone-400 bg-transparent"
-            style={{ color: IC.green }}
-          />
-          {/* Search icon */}
-          <button onClick={trySearch} className="flex-shrink-0 active:scale-90 transition-transform duration-100">
-            <svg className="w-5 h-5" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-          </button>
-        </div>
-
+    <div className="relative min-h-screen flex flex-col" style={{ backgroundColor: IC.cream }}>
+      {onClose && (
         <button
-          type="button"
-          onClick={trySearch}
-          className="w-full py-4 rounded-2xl font-bold tracking-widest uppercase text-sm transition-all duration-150 active:scale-[0.97] shadow-md text-white"
-          style={{ backgroundColor: IC.green }}
+          onClick={onClose}
+          className="absolute top-5 right-5 z-10 w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all duration-100"
+          style={{ backgroundColor: 'white', border: '1px solid #E5DDD0' }}
+          aria-label="Cancel"
         >
-          {isLoading
-            ? <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            : 'Find My Store'}
+          <svg className="w-4 h-4" fill="none" stroke={IC.green} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
         </button>
-
-        {error && (
-          <p className="text-sm text-red-600 text-center font-medium">{error}</p>
-        )}
-      </div>
-
-      {/* Store results */}
-      {locationResults.length > 0 && (
-        <div className="mt-5 w-full max-w-sm bg-white rounded-2xl shadow-md overflow-hidden border border-stone-200">
-          <p className="px-5 pt-4 pb-2 text-[10px] font-black uppercase tracking-[0.3em]" style={{ color: IC.textMuted }}>
-            {locationResults.length} location{locationResults.length !== 1 ? 's' : ''} found
-          </p>
-          <ul className="pb-2">
-            {locationResults.map((loc, idx) => (
-              <li key={loc.locationId}>
-                <button
-                  onClick={() => onSelect(loc)}
-                  className={`w-full text-left px-5 py-3.5 transition-all duration-100 active:scale-[0.99] ${idx < locationResults.length - 1 ? 'border-b border-stone-100' : ''}`}
-                  style={{ color: IC.green }}
-                  onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#F2EDE0')}
-                  onMouseLeave={e => (e.currentTarget.style.backgroundColor = '')}
-                >
-                  <p className="font-bold text-sm">{loc.name}</p>
-                  <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>
-                    {loc.address.addressLine1}, {loc.address.city}, {loc.address.state} {loc.address.zipCode}
-                  </p>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
       )}
+
+      <div className="flex-1 flex flex-col items-center px-6 py-10 sm:py-16 w-full">
+        <RadarLogo className="w-20 h-20 sm:w-24 sm:h-24 mb-4" />
+        <h1 className="text-2xl sm:text-3xl font-black tracking-[0.15em] uppercase text-center" style={{ color: IC.green }}>Inner Circle</h1>
+        <p className="text-xs font-bold tracking-[0.35em] uppercase mt-1 mb-8" style={{ color: IC.textMuted }}>Store Setup</p>
+
+        {/* Step indicator */}
+        <div className="flex items-center gap-2 mb-8">
+          {(['zip', 'kroger', 'costco'] as OnboardingStep[]).map((s, i) => (
+            <div key={s} className="flex items-center gap-2">
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-black transition-all duration-200 flex-shrink-0"
+                style={{
+                  backgroundColor: i <= currentStepIndex ? IC.green : '#E5DDD0',
+                  color: i <= currentStepIndex ? 'white' : IC.textMuted,
+                }}
+              >{i < currentStepIndex ? '✓' : i + 1}</div>
+              {i < 2 && <div className="w-6 sm:w-10 h-0.5 flex-shrink-0" style={{ backgroundColor: i < currentStepIndex ? IC.green : '#E5DDD0' }} />}
+            </div>
+          ))}
+        </div>
+
+        <div className="w-full max-w-sm">
+          {step === 'zip' && (
+            <div className="space-y-4">
+              <div className="text-center">
+                <p className="text-lg font-black uppercase tracking-wider" style={{ color: IC.green }}>Enter Your ZIP Code</p>
+                <p className="text-sm mt-2" style={{ color: IC.textMuted }}>
+                  We will use this to find your nearest Kroger store and set up your shopping area.
+                </p>
+              </div>
+              <div className="bg-white rounded-2xl shadow-sm flex items-center px-5 py-4 gap-3 border border-stone-200">
+                <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke={IC.gold} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <div className="w-px h-5 bg-stone-200 flex-shrink-0" />
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  maxLength={5}
+                  value={zipInput}
+                  onChange={e => setZipInput(e.target.value.replace(/\D/g, '').slice(0, 5))}
+                  onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                  placeholder="Enter your zip code"
+                  autoFocus
+                  className="flex-1 text-base focus:outline-none placeholder:text-stone-400 bg-transparent"
+                  style={{ color: IC.green }}
+                />
+              </div>
+              <button
+                onClick={handleSearch}
+                disabled={!zipValid}
+                className="w-full py-4 rounded-2xl font-bold tracking-widest uppercase text-sm transition-all duration-150 active:scale-[0.97] shadow-md text-white disabled:opacity-40"
+                style={{ backgroundColor: IC.green }}
+              >Continue →</button>
+            </div>
+          )}
+
+          {step === 'kroger' && (
+            <div className="space-y-4">
+              <div className="text-center">
+                <p className="text-lg font-black uppercase tracking-wider" style={{ color: IC.green }}>Select Your Kroger Store</p>
+                <p className="text-sm mt-2" style={{ color: IC.textMuted }}>Nearby stores for ZIP {zipInput}</p>
+              </div>
+
+              {isLoading && (
+                <div className="flex flex-col items-center py-10 gap-3">
+                  <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: IC.gold, borderTopColor: 'transparent' }} />
+                  <p className="text-sm font-medium" style={{ color: IC.textMuted }}>Finding stores…</p>
+                </div>
+              )}
+
+              {!isLoading && error && (
+                <p className="text-sm text-red-600 text-center font-medium py-4">{error}</p>
+              )}
+
+              {!isLoading && locationResults.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-md overflow-hidden border border-stone-200">
+                  <ul>
+                    {locationResults.map((loc, idx) => (
+                      <li key={loc.locationId}>
+                        <button
+                          onClick={() => handleSelect(loc)}
+                          className={`w-full text-left px-5 py-3.5 transition-all duration-100 active:scale-[0.99] flex items-start justify-between gap-3 ${idx < locationResults.length - 1 ? 'border-b border-stone-100' : ''}`}
+                          style={{ color: IC.green }}
+                          onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#F2EDE0')}
+                          onMouseLeave={e => (e.currentTarget.style.backgroundColor = '')}
+                        >
+                          <div className="min-w-0">
+                            <p className="font-bold text-sm">{loc.name}</p>
+                            <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>
+                              {loc.address.addressLine1}, {loc.address.city}, {loc.address.state} {loc.address.zipCode}
+                            </p>
+                          </div>
+                          {loc.distanceMiles !== undefined && (
+                            <span className="flex-shrink-0 text-xs font-black px-2 py-1 rounded-full" style={{ backgroundColor: `${IC.gold}18`, color: IC.gold }}>
+                              {loc.distanceMiles < 0.1 ? '<0.1' : loc.distanceMiles.toFixed(1)} mi
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <button
+                onClick={() => setStep('zip')}
+                className="w-full py-3 rounded-2xl font-bold text-sm active:scale-95 transition-all duration-100"
+                style={{ color: IC.gold }}
+              >← Try a different ZIP code</button>
+            </div>
+          )}
+
+          {step === 'costco' && (
+            <div className="space-y-4">
+              <div className="text-center">
+                <p className="text-lg font-black uppercase tracking-wider" style={{ color: IC.green }}>Costco Location Set</p>
+              </div>
+              <div className="bg-white rounded-2xl shadow-sm px-5 py-5" style={{ border: `2px solid ${IC.costco}` }}>
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                  <StoreTag store="costco" />
+                  <p className="font-black text-sm uppercase tracking-wide" style={{ color: IC.green }}>Costco Location Noted — {zipInput}</p>
+                </div>
+                <p className="text-sm" style={{ color: IC.textMuted }}>
+                  We have saved {zipInput} to your account. Costco&apos;s catalog currently pulls pricing and availability from a single reference warehouse rather than a per-ZIP lookup, so results may not always exactly match your local Costco — search, carts, and dispatches all still work the same either way.
+                </p>
+              </div>
+              {selectedStore && (
+                <div className="bg-white rounded-2xl px-5 py-4 border border-stone-200">
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] mb-1" style={{ color: IC.textMuted }}>Your Kroger Store</p>
+                  <p className="font-bold text-sm" style={{ color: IC.green }}>{selectedStore.name}</p>
+                  <p className="text-xs mt-0.5" style={{ color: IC.textMuted }}>{selectedStore.address.addressLine1}, {selectedStore.address.city}, {selectedStore.address.state}</p>
+                </div>
+              )}
+              <button
+                onClick={onFinish}
+                className="w-full py-4 rounded-2xl font-bold tracking-widest uppercase text-sm transition-all duration-150 active:scale-[0.97] shadow-md text-white"
+                style={{ backgroundColor: IC.green }}
+              >Start Shopping →</button>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -2935,6 +3045,8 @@ export default function ShoppingApp() {
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
 
   const [store, setStore] = useState<KrogerLocation | null>(null)
+  const [zipCode, setZipCode] = useState(DEFAULT_ZIP)
+  const [locationOnboardingOpen, setLocationOnboardingOpen] = useState(false)
   const [activeStoreType, setActiveStoreType] = useState<StoreType>('kroger')
   const [shoppingActive, setShoppingActive] = useState(false)
   const [locationResults, setLocationResults] = useState<KrogerLocation[]>([])
@@ -2980,6 +3092,7 @@ export default function ShoppingApp() {
     const savedStore = loadStore()
     const savedStoreType = loadStoreType()
     const savedDispatches = loadDispatches()
+    setZipCode(loadZipCode())
     if (savedStore) setStore(savedStore)
     setActiveStoreType(savedStoreType)
     if (savedDispatches && savedDispatches.length > 0) {
@@ -3076,6 +3189,8 @@ export default function ShoppingApp() {
 
   const searchLocations = useCallback(async (zip: string) => {
     if (zip.length < 5) { setLocationError('Please enter a 5-digit zip code.'); return }
+    setZipCode(zip)
+    saveZipCode(zip)
     setLocationLoading(true); setLocationError('')
     try {
       const res = await fetch(`/api/kroger/locations?zip=${zip}`)
@@ -3092,6 +3207,10 @@ export default function ShoppingApp() {
     setStore(loc); setLocationResults([])
     setProducts([]); setSearchQuery(''); setSearchStart(0); setSearchTotal(0)
     setShoppingActive(false)
+  }, [])
+
+  const finishLocationOnboarding = useCallback(() => {
+    setLocationOnboardingOpen(false)
   }, [])
 
   const changeStoreType = useCallback((type: StoreType) => {
@@ -3692,8 +3811,19 @@ export default function ShoppingApp() {
     )
   }
 
-  if (activeStoreType === 'kroger' && !store) {
-    return <StorePicker locationResults={locationResults} isLoading={locationLoading} error={locationError} onSearch={searchLocations} onSelect={selectStore} />
+  if (locationOnboardingOpen || (activeStoreType === 'kroger' && !store)) {
+    return (
+      <LocationOnboardingScreen
+        initialZip={zipCode}
+        locationResults={locationResults}
+        isLoading={locationLoading}
+        error={locationError}
+        onSearchZip={searchLocations}
+        onSelectStore={selectStore}
+        onFinish={finishLocationOnboarding}
+        onClose={store ? () => setLocationOnboardingOpen(false) : undefined}
+      />
+    )
   }
 
   if (!shoppingActive) {
@@ -3701,6 +3831,7 @@ export default function ShoppingApp() {
       <>
         <HomeScreen
           krogerLocation={store}
+          zipCode={zipCode}
           activeStoreType={activeStoreType}
           dispatches={dispatches}
           activeDispatchId={activeDispatchId}
@@ -3710,7 +3841,7 @@ export default function ShoppingApp() {
           memberRoles={memberRoles}
           isAdmin={isAdmin}
           onChangeStoreType={changeStoreType}
-          onChangeStore={() => { setStore(null); setLocationResults([]); setProducts([]) }}
+          onChangeStore={() => setLocationOnboardingOpen(true)}
           onOpenDispatch={(id) => { setActiveDispatchId(id); setShoppingActive(true) }}
           onDeleteDispatch={deleteHistoryDispatch}
           onManageFamily={() => setAdminPanelOpen(true)}
@@ -3791,7 +3922,7 @@ export default function ShoppingApp() {
             </div>
           </div>
           <button
-            onClick={() => { setStore(null); setLocationResults([]); setProducts([]); setShoppingActive(false) }}
+            onClick={() => { setShoppingActive(false); setLocationOnboardingOpen(true) }}
             className="ml-3 text-xs font-bold active:scale-95 transition-all duration-100 whitespace-nowrap"
             style={{ color: IC.gold }}
           >Change</button>
@@ -3799,7 +3930,7 @@ export default function ShoppingApp() {
       ) : activeStoreType === 'costco' ? (
         <div className="bg-white px-4 py-2.5 flex items-center gap-2 shadow-sm" style={{ borderBottom: `1px solid #E5DDD0`, borderLeft: `3px solid ${IC.costco}` }}>
           <StoreTag store="costco" />
-          <p className="text-xs" style={{ color: IC.textMuted }}>Searching Costco.com nationwide</p>
+          <p className="text-xs" style={{ color: IC.textMuted }}>Pricing & availability based on your ZIP code</p>
         </div>
       ) : null}
 

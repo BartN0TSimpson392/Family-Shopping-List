@@ -40,6 +40,10 @@ export interface KrogerLocation {
     zipCode: string
   }
   phone?: string
+  geolocation?: { latitude: number; longitude: number }
+  // Straight-line distance from the searched ZIP's centroid — computed
+  // server-side in lib/kroger.ts, not something Kroger's API returns itself.
+  distanceMiles?: number
 }
 
 export interface ProductImage {

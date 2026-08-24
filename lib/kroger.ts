@@ -35,13 +35,54 @@ async function krogerFetch(path: string): Promise<Response> {
   })
 }
 
+// Kroger's Locations API doesn't return a distance field, just an
+// already-proximity-sorted list plus each store's raw geolocation — so real
+// mile distances are computed here from the searched ZIP's centroid via a
+// free, keyless geocoder (api.zippopotam.us). If that lookup fails for any
+// reason, locations are still returned (just without distanceMiles) rather
+// than failing the whole search over a "nice to have".
+async function geocodeZip(zip: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const res = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`, { cache: 'no-store' })
+    if (!res.ok) return null
+    const data = await res.json()
+    const place = data?.places?.[0]
+    if (!place) return null
+    const lat = parseFloat(place.latitude)
+    const lng = parseFloat(place.longitude)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+    return { lat, lng }
+  } catch {
+    return null
+  }
+}
+
+function haversineMiles(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 3958.8 // Earth radius in miles
+  const dLat = (b.lat - a.lat) * Math.PI / 180
+  const dLng = (b.lng - a.lng) * Math.PI / 180
+  const lat1 = a.lat * Math.PI / 180
+  const lat2 = b.lat * Math.PI / 180
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.asin(Math.sqrt(h))
+}
+
 export async function searchLocations(zip: string): Promise<KrogerLocation[]> {
-  const res = await krogerFetch(
-    `/locations?filter.zipCode.near=${encodeURIComponent(zip)}&filter.limit=10&filter.chain=Kroger`
-  )
+  const [res, origin] = await Promise.all([
+    krogerFetch(`/locations?filter.zipCode.near=${encodeURIComponent(zip)}&filter.limit=10&filter.chain=Kroger`),
+    geocodeZip(zip),
+  ])
   if (!res.ok) throw new Error(`Locations API ${res.status}`)
   const data = await res.json()
-  return data.data ?? []
+  const locations: KrogerLocation[] = data.data ?? []
+  if (!origin) return locations
+
+  const withDistance = locations.map(loc => {
+    const geo = loc.geolocation
+    if (!geo) return loc
+    return { ...loc, distanceMiles: haversineMiles(origin, { lat: geo.latitude, lng: geo.longitude }) }
+  })
+  return withDistance.sort((a, b) => (a.distanceMiles ?? Infinity) - (b.distanceMiles ?? Infinity))
 }
 
 export async function searchProducts(
